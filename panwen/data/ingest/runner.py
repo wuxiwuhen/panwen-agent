@@ -1,6 +1,6 @@
 # panwen/data/ingest/runner.py
 import duckdb
-from panwen.data.ingest.specs import Spec
+from panwen.data.ingest.specs import Spec, _KEY
 from panwen.data.ingest import mapping, loader, client as _client
 from panwen.data.ingest.checkpoint import Checkpoint
 
@@ -13,6 +13,7 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
     if spec.iteration == "oneshot":
         df = client.fetch(spec.source, **spec.extra_kwargs)
         df = mapping.map_columns(df, spec.rename_map)
+        df = _apply_const(df, spec.const_cols, key=None)
         return loader.upsert_df(conn, spec.table, df, spec.conflict_cols)
 
     # 迭代型: 选出待处理 keys,断点续传
@@ -28,6 +29,7 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
         try:
             df = client.fetch(spec.source, **spec.arg_builder(k))
             df = mapping.map_columns(df, spec.rename_map)
+            df = _apply_const(df, spec.const_cols, key=k)
             total += loader.upsert_df(conn, spec.table, df, spec.conflict_cols)
             if checkpoint:
                 checkpoint.mark(spec.name, k)
@@ -35,6 +37,18 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
             # 单 key 失败不阻断整体;记录后继续(断点续传下次重试)
             print(f"[warn] {spec.name} key={k} failed: {e}")
     return total
+
+
+def _apply_const(df, const_cols: dict, key):
+    """Task 11: 在 map_columns 之后注入声明式常量列(Spec.const_cols)。
+
+    - 值为 _KEY sentinel 时, 写入当前 per_code 迭代键(oneshot 传 key=None 时不应出现 _KEY)。
+    - 否则写入字面常量值。
+    - 空 const_cols 为 no-op(向后兼容; 未声明 const_cols 的 spec 不受影响)。
+    """
+    for col, val in const_cols.items():
+        df[col] = key if val is _KEY else val
+    return df
 
 
 def _all_codes(conn) -> list[str]:

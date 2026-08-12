@@ -3,6 +3,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 
 
+# Sentinel: when used as a value in Spec.const_cols, instructs run_ingest to
+# substitute the current per_code iteration key (e.g. the stock code or board
+# name being fetched) as that column's value. Used for endpoints that omit the
+# key dimension from their returned rows (e.g. stock_financial_analysis_indicator
+# does not return 股票代码).
+_KEY = object()
+
+
 @dataclass
 class Spec:
     """声明式 ingest 配置 —— 每张 canonical 表一份。"""
@@ -16,6 +24,15 @@ class Spec:
     arg_builder: Callable[[str], dict] = field(default=lambda k: {})
     # 可选: per_code 的代码来源(默认全部 A 股)
     extra_kwargs: dict = field(default_factory=dict)
+    # Task 11: 声明式常量列注入。col -> 字面值, 或 _KEY -> 当前 per_code 迭代键。
+    # run_ingest 在 map_columns 之后写入这些列(空 const_cols 为 no-op,向后兼容)。
+    const_cols: dict = field(default_factory=dict)
+    # Task 11: per_code spec 的迭代键来源域。
+    #   "code"           -> 股票代码(默认;由 code_source / stock_basic 提供)
+    #   "industry_board" -> 行业板块名(由 industry_board 表提供)
+    #   "concept_board"  -> 概念板块名(由 concept_board 表提供)
+    # backfill.run_all 据此路由; run_ingest 本身仍只消费 code_source。
+    key_domain: str = "code"
 
 
 import akshare as ak
@@ -78,11 +95,14 @@ def build_quote_specs():
 from panwen.data.ingest.mapping import to_sina_code
 
 # ===== 财务域 =====
-# 列名校准来源: stock_financial_analysis_indicator / stock_em_yjbb / stock_financial_report_sina
-# 均在 Task 4 探测中被 ProxyError 阻断(eastmoney 上游),所以下列 rename_map 为
-# 文档 schema 猜测,NOT VERIFIED。首次真实回填前需在开放网络用 probe_akshare.py 重探,
-# 否则 map_columns 会静默丢列。仅 FIN_INDICATOR_SPEC 的中文 key 与本任务 mock 测试 df
-# 对齐以保证测试通过 —— 这并不代表真实 akshare 列名。
+# 列名校准来源:
+#   stock_financial_analysis_indicator -> VERIFIED (Task 11 probe 2026-08-12, symbol=600519):
+#                     端点可达,实际列见 FIN_INDICATOR_SPEC 注释(roa=总资产净利润率(%) 等)。
+#                     端点不返回 股票代码/市盈率/市净率 -> code 由 const_cols 注入; pe/pb 见 spot_snapshot。
+#   stock_yjbb_em                      -> VERIFIED (Task 11 probe 2026-08-12, PERFORMANCE_SPEC)。
+#   stock_financial_report_sina        -> 仍在 Task 4 探测中被 ProxyError 阻断(sina 上游),
+#                     下列 INCOME/BALANCE/CASHFLOW 的 rename_map 为文档 schema 猜测, NOT VERIFIED。
+#                     首次真实回填前需在开放网络用 probe_akshare.py 重探,否则 map_columns 会静默丢列。
 def _report_arg(stmt):  # stmt: "利润表"/"资产负债表"/"现金流量表"
     return lambda code: {"stock": to_sina_code(code), "symbol": stmt}
 
@@ -114,19 +134,28 @@ FIN_INDICATOR_SPEC = Spec(
     name="fin_indicator", table="financial_indicator",
     source=lambda *a, **kw: ak.stock_financial_analysis_indicator(*a, **kw),
     iteration="per_code",
-    rename_map={"日期": "report_date", "股票代码": "code", "净资产收益率(%)": "roe",
-                "总资产报酬率(%)": "roa", "销售毛利率(%)": "gross_margin",
-                "销售净利率(%)": "net_margin", "资产负债率(%)": "debt_ratio",
-                "市盈率": "pe", "市净率": "pb"},
+    # 列名校准来源: probe 2026-08-12 (stock_financial_analysis_indicator, symbol=600519)
+    #   VERIFIED 实际列含: 日期 / 净资产收益率(%) / 总资产净利润率(%) / 销售毛利率(%) /
+    #                       销售净利率(%) / 资产负债率(%) (roa 取 总资产净利润率(%) = 净利/总资产)
+    #   端点不返回 股票代码 -> code 由 const_cols 从迭代键注入(_KEY)。
+    #   端点不返回 市盈率/市净率 -> 已从 rename_map 移除;pe/pb 由 spot_snapshot 提供
+    #                       (spot_snapshot.pe_ttm / spot_snapshot.pb)。勿在此重加。
+    rename_map={"日期": "report_date", "净资产收益率(%)": "roe",
+                "总资产净利润率(%)": "roa", "销售毛利率(%)": "gross_margin",
+                "销售净利率(%)": "net_margin", "资产负债率(%)": "debt_ratio"},
     conflict_cols=["code", "report_date"],
     arg_builder=lambda code: {"symbol": code, "start_year": "2015"},
+    const_cols={"code": _KEY},  # 端点不返回股票代码;从 per_code 迭代键注入
 )
-PERFORMANCE_SPEC = Spec(  # 业绩快报: 按报告期全市场批量
+PERFORMANCE_SPEC = Spec(  # 业绩报表: 按报告期全市场批量
+    # 列名校准来源: VERIFIED (Task 11 probe 2026-08-12, stock_yjbb_em date=20231231):
+    #   实际列含 股票代码 / 营业总收入-同比增长 / 净利润-同比增长 / 最新公告日期 等。
+    #   (Task 9 原写 stock_em_yjbb / 报告日 / 营业收入-同比增长 均不存在 -> 已修正。)
     name="performance", table="performance_express",
-    source=lambda *a, **kw: ak.stock_em_yjbb(*a, **kw),
+    source=lambda *a, **kw: ak.stock_yjbb_em(*a, **kw),
     iteration="per_period",
-    rename_map={"股票代码": "code", "报告日": "report_date",
-                "营业收入-同比增长": "revenue_yoy", "净利润-同比增长": "net_profit_yoy"},
+    rename_map={"股票代码": "code", "最新公告日期": "report_date",
+                "营业总收入-同比增长": "revenue_yoy", "净利润-同比增长": "net_profit_yoy"},
     conflict_cols=["code", "report_date"],
     arg_builder=lambda period: {"date": period},
 )
@@ -137,17 +166,20 @@ def build_finance_specs():
 
 # ===== 行业板块 / 概念板块 / 资金面 / 宏观 / 事件域 (Task 10) =====
 #
-# 常量列注入(const-col injection)—— Task 11 实现,本任务仅声明 spec。
-# 下列 spec 需要一列 akshare 端点不返回,须在 Task 11 的 backfill 编排里于
-# map_columns 之后注入(给 run_ingest 加 post_map 钩子或特例两行补列):
-#   - MARGIN_SPEC                -> inject market="sse"
-#   - MACRO_CPI_SPEC             -> inject indicator="CPI_YOY"
-#                                   (extra_kwargs["__indicator"] 是 INTENTIONAL magic key:
-#                                    Task 11 在 fetch 前剥离 __ 前缀键、用于注入。
-#                                    勿在 Task 10 中"修正"或移除。)
-#   - INDUSTRY_BOARD_DAILY_SPEC  -> inject board_name=<iteration key>
-#   - FIN_INDICATOR_SPEC (Task 9 承接) -> inject code=<iteration key>
-# 这些 spec 的 conflict_cols 引用了被注入列;在 Task 11 注入前不要真实回填这些表。
+# 常量列注入(const-col injection)—— Task 11 实现于 run_ingest 的 _apply_const,
+# 通过 Spec.const_cols 声明式驱动(非 wrapper-client)。下列 spec 需要一列 akshare
+# 端点不返回,已在 Task 11 通过 const_cols 声明:
+#   - MARGIN_SPEC                -> const_cols={"market": "sse"}
+#   - MACRO_CPI_SPEC             -> const_cols={"indicator": "CPI_YOY"}
+#   - INDUSTRY_BOARD_DAILY_SPEC  -> const_cols={"board_name": _KEY}  (per_code 迭代键)
+#   - FIN_INDICATOR_SPEC (Task 9 承接) -> const_cols={"code": _KEY} (per_code 迭代键)
+# 这些 spec 的 conflict_cols 引用了被注入列;const_cols 注入在 upsert 之前完成。
+#
+# 板块键路由(board-key routing)—— per_code 板块 spec 通过 key_domain 声明其迭代键
+# 来源,backfill.run_all._key_source 据此从板块表读取板块名(而非股票代码):
+#   - INDUSTRY_CONST_SPEC / INDUSTRY_BOARD_DAILY_SPEC -> key_domain="industry_board"
+#   - CONCEPT_CONST_SPEC                              -> key_domain="concept_board"
+# build_domain_specs() 已保证 oneshot 板块-LIST spec 排在 per_code 板块 spec 之前。
 #
 # 列名校准来源(probe 2026-08-12):
 #   stock_margin_sse (SSE)        -> VERIFIED  ['信用交易日期','融资余额','融资买入额',
@@ -179,6 +211,7 @@ INDUSTRY_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe
     rename_map={"板块名称": "board_name", "代码": "code"},
     conflict_cols=["board_name", "code"],
     arg_builder=lambda board: {"symbol": board},
+    key_domain="industry_board",  # Task 11: 迭代键来自 industry_board.name, 非股票代码
 )
 INDUSTRY_BOARD_DAILY_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
     name="industry_board_daily", table="industry_board_daily",
@@ -188,6 +221,8 @@ INDUSTRY_BOARD_DAILY_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re
     conflict_cols=["board_name", "date"],
     arg_builder=lambda board: {"symbol": board, "period": "daily",
                                "start_date": "20100101", "end_date": "20991231"},
+    const_cols={"board_name": _KEY},  # Task 11: 端点不返回板块名;从迭代键注入
+    key_domain="industry_board",      # Task 11: 迭代键来自 industry_board.name, 非股票代码
 )
 
 # --- 概念板块 ---
@@ -205,10 +240,11 @@ CONCEPT_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe 
     rename_map={"板块名称": "board_name", "代码": "code"},
     conflict_cols=["board_name", "code"],
     arg_builder=lambda b: {"symbol": b},
+    key_domain="concept_board",  # Task 11: 迭代键来自 concept_board.name, 非股票代码
 )
 
 # --- 资金面 ---
-MARGIN_SPEC = Spec(  # VERIFIED (stock_margin_sse 探测 2026-08-12);market 列由 Task 11 注入
+MARGIN_SPEC = Spec(  # VERIFIED (stock_margin_sse 探测 2026-08-12);market 列由 const_cols 注入
     name="margin", table="margin_daily",
     source=lambda *a, **kw: ak.stock_margin_sse(*a, **kw),
     iteration="oneshot",
@@ -216,6 +252,7 @@ MARGIN_SPEC = Spec(  # VERIFIED (stock_margin_sse 探测 2026-08-12);market 列�
                 "融券余量金额": "rqye", "融资融券余额": "rzrqye"},
     conflict_cols=["date", "market"],
     extra_kwargs={"start_date": "20150101", "end_date": "20991231"},
+    const_cols={"market": "sse"},  # Task 11: 静态常量列(SSE 融资融券),run_ingest 注入
 )
 DRAGON_TIGER_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
     name="dragon_tiger", table="dragon_tiger",
@@ -239,13 +276,14 @@ TOP10_HOLDERS_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe 
 )
 
 # --- 宏观 ---
-MACRO_CPI_SPEC = Spec(  # VERIFIED (macro_china_cpi 探测 2026-08-12);indicator 列由 Task 11 注入
+MACRO_CPI_SPEC = Spec(  # VERIFIED (macro_china_cpi 探测 2026-08-12);indicator 列由 const_cols 注入
     name="macro_cpi", table="macro_series",
     source=lambda *a, **kw: ak.macro_china_cpi(*a, **kw),
     iteration="oneshot",
     rename_map={"月份": "date", "全国-同比增长": "value"},
     conflict_cols=["indicator", "date"],
-    extra_kwargs={"__indicator": "CPI_YOY"},  # INTENTIONAL magic key: Task 11 fetch 前剥离 __ 前缀、用于注入 indicator 列。勿移除。
+    extra_kwargs={},  # macro_china_cpi 不接受参数;indicator 经 const_cols 注入(非 __indicator magic key)
+    const_cols={"indicator": "CPI_YOY"},  # Task 11: 静态常量列,run_ingest 注入
 )
 
 
