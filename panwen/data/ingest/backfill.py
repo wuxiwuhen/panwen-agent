@@ -40,7 +40,12 @@ def run_all(conn: duckdb.DuckDBPyConnection, *, seed_path: str | None = None,
             kw["code_source"] = _key_source(conn, spec, code_source)
         elif spec.iteration == "per_period":
             kw["period_source"] = periods or []
-        runner.run_ingest(conn, spec, **kw)
+        # spec 级隔离: 单个 spec(尤其 oneshot 或结构错误)抛错不应中断整轮回填;
+        # 与 run_ingest 内的 per-key 隔离哲学对齐。记录后继续下一个 spec。
+        try:
+            runner.run_ingest(conn, spec, **kw)
+        except Exception as e:
+            print(f"[warn] backfill spec={spec.name} ({spec.table}) failed: {e}")
 
 
 def _key_source(conn, spec, codes):

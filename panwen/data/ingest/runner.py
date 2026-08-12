@@ -18,7 +18,9 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
 
     # 迭代型: 选出待处理 keys,断点续传
     if spec.iteration == "per_code":
-        keys = code_source or _all_codes(conn)
+        # 区分 None(未提供 -> 自动发现全部 A 股)与 [](显式空,如板块表为空时
+        # _key_source 返回 []);后者必须保持空,否则会回退到股票代码当作板块名。
+        keys = code_source if code_source is not None else _all_codes(conn)
     elif spec.iteration == "per_period":
         keys = period_source or []
     else:
