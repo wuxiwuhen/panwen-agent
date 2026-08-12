@@ -1,4 +1,4 @@
-.PHONY: install seed-backfill data-backfill data-incremental eval-freeze test
+.PHONY: install seed-backfill data-backfill data-incremental task0-financials eval-freeze test
 
 install:
 	pip install -e ".[dev]"
@@ -29,10 +29,19 @@ data-incremental:
 	python -c "from panwen.data import db; from panwen.data.ingest import incremental, client; \
 	c=db.connect('data/live.duckdb'); db.init_schema(c); incremental.run_daily(c, client=client); c.close()"
 
+# Task 0: sina 财务定向扩量 —— 4 张财务表从 2 股扩到 eval_codes 种子(~30 股)。
+# 只跑 sina 端点(income/balance/cashflow/fin_indicator),避开 eastmoney 限流。
+# 写入 data/live.duckdb(已存在则 upsert,幂等)。需联网,约数分钟。
+task0-financials:
+	mkdir -p data
+	python scripts/expand_financials.py
+
 # 冻结 live→eval,eval.duckdb 随仓提交以保证指标可复现。
+# --as-of 实测自 income_statement.max(report_date) (Step 8 of Task 0, 2026-08-12):
+# sina 4 端点回填后 max(report_date)=2026-06-30 (Q2 2026 中报已披露),按"实测冻结日"原则采用。
 eval-freeze:
 	mkdir -p data
-	python scripts/freeze_eval.py --as-of 2024-12-31
+	python scripts/freeze_eval.py --as-of 2026-06-30
 
 test:
 	pytest -v
