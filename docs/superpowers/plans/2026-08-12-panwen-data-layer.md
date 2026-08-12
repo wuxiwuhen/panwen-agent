@@ -677,6 +677,11 @@ from panwen.data.ingest import runner, checkpoint
 def _conn(tmp_path):
     c = db.connect(str(tmp_path / "t.duckdb")); db.init_schema(c); return c
 
+class FakeClient:
+    """测试用 client: 暴露 .fetch,直接转发给 source 函数(不经节流/重试)。"""
+    def fetch(self, func, **kw):
+        return func(**kw)
+
 def test_run_ingest_oneshot(tmp_path, mocker):
     conn = _conn(tmp_path)
     fake_src = mocker.Mock(return_value=pd.DataFrame({
@@ -684,29 +689,29 @@ def test_run_ingest_oneshot(tmp_path, mocker):
     spec = Spec(name="spot", table="spot_snapshot", source=fake_src, iteration="oneshot",
                 rename_map={"代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "pct_chg"},
                 conflict_cols=["code"])
-    # spot_snapshot 列较多,补齐必填列避免 NOT NULL? DDL 无 NOT NULL,缺失列=NULL,可接受
-    n = runner.run_ingest(conn, spec, client=lambda f, **kw: f(**kw))
+    # DDL 无 NOT NULL,缺失列写 NULL,可接受
+    n = runner.run_ingest(conn, spec, client=FakeClient())
     assert n >= 1
     assert conn.execute("SELECT code FROM spot_snapshot").fetchone()[0] == "000001"
 
 def test_run_ingest_per_code_with_checkpoint(tmp_path, mocker):
     conn = _conn(tmp_path)
-    def fake_src(symbol): 
-        return pd.DataFrame({"日期": ["2024-01-02"], "股票代码": [symbol],
-                             "收盘": [10.0], "开盘":[10.0],"最高":[10.0],"最低":[10.0],
-                             "成交量":[100],"成交额":[1000],"涨跌幅":[1.0],"换手率":[1.0]})
+    fake_src = mocker.Mock(side_effect=lambda symbol: pd.DataFrame({
+        "日期": ["2024-01-02"], "股票代码": [symbol], "收盘": [10.0], "开盘": [10.0],
+        "最高": [10.0], "最低": [10.0], "成交量": [100], "成交额": [1000.0],
+        "涨跌幅": [1.0], "换手率": [1.0]}))
     spec = Spec(name="daily_quote", table="daily_quote", source=fake_src, iteration="per_code",
-                rename_map={"日期":"date","股票代码":"code","收盘":"close","开盘":"open",
-                            "最高":"high","最低":"low","成交量":"volume","成交额":"amount",
-                            "涨跌幅":"pct_chg","换手率":"turnover"},
-                conflict_cols=["code","date"], arg_builder=lambda code: {"symbol": code})
-    cp = checkpoint.Checkpoint(str(tmp_path/"cp.json"))
-    runner.run_ingest(conn, spec, client=lambda f, **kw: f(**kw), checkpoint=cp,
+                rename_map={"日期": "date", "股票代码": "code", "收盘": "close", "开盘": "open",
+                            "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount",
+                            "涨跌幅": "pct_chg", "换手率": "turnover"},
+                conflict_cols=["code", "date"], arg_builder=lambda code: {"symbol": code})
+    cp = checkpoint.Checkpoint(str(tmp_path / "cp.json"))
+    runner.run_ingest(conn, spec, client=FakeClient(), checkpoint=cp,
                       code_source=["000001", "000002"])
     assert cp.is_done("daily_quote", "000001") and cp.is_done("daily_quote", "000002")
     # 第二次跑: 全部跳过,不再调用 source
     fake_src.side_effect = AssertionError("不该再调用")
-    runner.run_ingest(conn, spec, client=lambda f, **kw: f(**kw), checkpoint=cp,
+    runner.run_ingest(conn, spec, client=FakeClient(), checkpoint=cp,
                       code_source=["000001", "000002"])  # 不抛即通过
 ```
 
@@ -736,8 +741,8 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
         keys = code_source or _all_codes(conn)
     elif spec.iteration == "per_period":
         keys = period_source or []
-    else:  # per_date 等,由调用方经 extra_kwargs 或 arg_builder 处理
-        keys = spec.extra_kwargs.get("_keys", [])
+    else:
+        raise ValueError(f"unknown iteration: {spec.iteration}")
 
     todo = keys if checkpoint is None else checkpoint.resume_iter(spec.name, keys)
     for k in todo:
@@ -1012,7 +1017,7 @@ def test_domain_specs_cover_all():
 
 def test_margin_spec_iteration():
     m = [s for s in specs.build_domain_specs() if s.table=="margin_daily"][0]
-    assert m.iteration in ("per_date","oneshot")
+    assert m.iteration == "oneshot"
 ```
 
 - [ ] **Step 2: 运行确认失败** → FAIL
@@ -1039,16 +1044,15 @@ CONCEPT_CONST_SPEC = Spec(name="concept_const", table="concept_board_const",
 
 # ===== 资金面 =====
 MARGIN_SPEC = Spec(name="margin", table="margin_daily", source=ak.stock_margin_sse,
-    iteration="per_date",
-    rename_map={"日期": "date", "信用交易日期": "date", "融资余额": "rzye",
-                "融券余额": "rqye", "融资融券余额": "rzrqye"},
+    iteration="oneshot",
+    rename_map={"日期": "date", "融资余额": "rzye", "融券余额": "rqye", "融资融券余额": "rzrqye"},
     conflict_cols=["date", "market"],
-    arg_builder=lambda d: {"start_date": d, "end_date": d},
-    extra_kwargs={"_keys": [], "__market": "sse"})  # market 在 loader 前置注入(见下注)
+    extra_kwargs={"start_date": "20150101", "end_date": "20991231"})  # market 列由 _CONSTANT_COLS 注入
 DRAGON_TIGER_SPEC = Spec(name="dragon_tiger", table="dragon_tiger",
-    source=ak.stock_lhb_detail_em, iteration="per_date",
+    source=ak.stock_lhb_detail_em, iteration="oneshot",
     rename_map={"代码": "code", "上榜日": "date", "解读": "reason", "净买入": "net_buy"},
-    conflict_cols=["code", "date", "reason"], arg_builder=lambda d: {"start_date": d, "end_date": d})
+    conflict_cols=["code", "date", "reason"],
+    extra_kwargs={"start_date": "20150101", "end_date": "20991231"})
 
 # ===== 公司事件(🟡批次) =====
 TOP10_HOLDERS_SPEC = Spec(name="top10_holders", table="top10_holders",
