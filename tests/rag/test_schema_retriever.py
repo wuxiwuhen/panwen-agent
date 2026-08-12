@@ -11,7 +11,6 @@ def test_retrieve_returns_topk_entries():
 
 
 def test_retrieve_uses_cache(tmp_path):
-    import panwen.rag.schema_retriever as mod
     r = sr.SchemaRetriever(embedder=FakeEmbedder(dim=32), topk=3,
                            cache_dir=str(tmp_path))
     r.ensure_indexed()

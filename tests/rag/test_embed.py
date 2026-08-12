@@ -14,8 +14,12 @@ def test_cosine_topk_returns_nearest():
     q = e.embed_texts(["白酒股的ROE"])[0]
     docs = e.embed_texts(["贵州茅台净利润", "CPI 同比", "白酒行业 ROE"])
     idx = embed.cosine_topk(q, docs, k=1)
-    # FakeEmbedder 弱语义，仅保证确定性 + 可调用；hash 近邻环境相关(numpy/py 版本)，允许任意合法下标
-    assert idx == [2] or idx[0] in (0, 1, 2)
+    # cosine_topk should return the true argmax of cosine similarity,
+    # independent of what the FakeEmbedder's vectors happen to be.
+    expected = int(np.argmax(docs @ q))
+    assert idx[0] == expected
+    # determinism: same inputs → same result (the test's stated "确定性" intent)
+    assert embed.cosine_topk(q, docs, k=1) == idx
 
 
 def test_bge_embedder_lazy_load_not_required_for_unit():
