@@ -127,8 +127,16 @@ def validate_sql(sql: str, schema_view: SchemaView, conn=None) -> list[Validatio
 
 
 def _extract_row_estimate(plan_rows) -> int | None:
-    """从 DuckDB EXPLAIN 输出里粗估行数(MVP：扫文本找 ~N rows)。"""
+    """从 DuckDB EXPLAIN 输出里粗估行数(MVP：扫文本找 ~N rows)。
+
+    DuckDB 在 explain_value 里以 ``~222,517 rows`` 形式输出(带千分位逗号、
+    小写 rows、~ 前缀)。正则捕获 ``[\\d,]+`` 后剥掉逗号再 int。
+    多个算子各自输出一行 ``~N rows``，取**最大值** —— 笛卡尔风险查询会
+    在某个算子上膨胀(如根 join 输出 222,517)，取 max 才能捕捉到。
+    """
     import re
     text = "\n".join(str(r) for r in plan_rows)
-    m = re.findall(r"~(\d+)\s*Rows", text, re.IGNORECASE)
-    return int(m[-1]) if m else None
+    matches = re.findall(r"~([\d,]+)\s*rows", text, re.IGNORECASE)
+    if not matches:
+        return None
+    return max(int(m.replace(",", "")) for m in matches)

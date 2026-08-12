@@ -61,3 +61,65 @@ def test_bare_literal_in_predicate_warned(sv):
 
 def test_parameterized_predicate_passes(sv):
     assert V.validate_sql("SELECT revenue FROM income_statement WHERE code=?", sv) == []
+
+
+# --- 检查 4 EXPLAIN 行数估算：千分位逗号回归 ---
+# DuckDB 在 explain_value 中以 ``~222,517 rows`` 形式输出(带千分位逗号、
+# 小写 rows、~ 前缀)。原正则 ``~(\d+)\s*Rows`` 在逗号处中断 → None → 检查 4
+# EXPLAIN 分支成为死代码。这里用 fake conn 锁定 DuckDB 文本格式。
+
+class _FakeResult:
+    """DuckDB cursor 的最小替身：fetchall 返回构造时给定的 plan 行。"""
+    def __init__(self, rows):
+        self._rows = rows
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    """DuckDB conn 的最小替身：execute(q) 返回 _FakeResult，忽略 q 内容。"""
+    def __init__(self, plan_rows):
+        self._plan_rows = plan_rows
+    def execute(self, q):
+        # 真实 DuckDB EXPLAIN 返回 (explain_key, explain_value) 两列。
+        return _FakeResult(self._plan_rows)
+
+
+def test_explain_row_estimate_with_comma_thousands_fires_cartesian(sv):
+    # 42,000 行 > 10,000 阈值 → 应告警(ROOT_CARTESIAN)
+    plan = [("physical_plan",
+             "... Join\n  ~42,000 rows\n  ...")]
+    fake_conn = _FakeConn(plan)
+    # 不用 ? 占位符，避免触发 DuckDB prepared-parameter(此处为 fake，但保持真实形状)
+    sql = ("SELECT i.revenue FROM income_statement i "
+           "JOIN balance_sheet b ON i.code=b.code")
+    issues = V.validate_sql(sql, sv, conn=fake_conn)
+    assert any(i.code == "ROOT_CARTESIAN" for i in issues), \
+        f"期望 ROOT_CARTESIAN(42,000 > 10,000)，实际 {[i.code for i in issues]}"
+
+
+def test_explain_row_estimate_small_passes(sv):
+    # 500 行 < 10,000 阈值 → 不告警
+    plan = [("physical_plan", "... ~500 rows ...")]
+    fake_conn = _FakeConn(plan)
+    sql = ("SELECT i.revenue FROM income_statement i "
+           "JOIN balance_sheet b ON i.code=b.code")
+    issues = V.validate_sql(sql, sv, conn=fake_conn)
+    assert not any(i.code == "ROOT_CARTESIAN" for i in issues), \
+        f"不应告警(500 < 10,000)，实际 {[i.code for i in issues]}"
+
+
+def test_extract_row_estimate_handles_comma_format():
+    # 直接锁定正则对 DuckDB 真实文本格式(带逗号、小写 rows、多算子)的解析
+    plan = [("physical_plan",
+             "┌───────────────────┐\n"
+             "│ ~222,517 rows     │\n"
+             "│ ~2,687 rows       │\n"
+             "│ ~2,650 rows       │\n"
+             "└───────────────────┘")]
+    assert V._extract_row_estimate(plan) == 222517
+
+
+def test_extract_row_estimate_returns_none_when_no_match():
+    plan = [("physical_plan", "no row estimate here")]
+    assert V._extract_row_estimate(plan) is None
