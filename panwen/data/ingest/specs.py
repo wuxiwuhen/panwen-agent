@@ -203,61 +203,68 @@ def build_finance_specs():
 #                                    '融券余量','融券余量金额','融券卖出量','融资融券余额']
 #   macro_china_cpi (国家统计局)   -> VERIFIED  ['月份','全国-当月','全国-同比增长',
 #                                    '全国-环比增长','全国-累计','城市-当月', ...]
-#   stock_board_industry_name_em  -> UNVERIFIED (eastmoney push2 ProxyError)
-#   stock_board_industry_cons_em  -> UNVERIFIED (eastmoney proxy-blocked)
-#   stock_board_industry_hist_em  -> UNVERIFIED (eastmoney proxy-blocked)
-#   stock_board_concept_name_em   -> UNVERIFIED (eastmoney push2 ProxyError)
-#   stock_board_concept_cons_em   -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_board_industry_name_em  -> 改用 ths(见下); eastmoney 版限流弃用
+#   stock_board_industry_cons_em  -> UNVERIFIED (eastmoney 受限流; ths 无成分股端点) — 待限流解除重探测
+#   stock_board_industry_hist_em  -> 改用 ths stock_board_industry_index_ths(见下); eastmoney 版限流弃用
+#   stock_board_concept_name_em   -> 改用 ths(见下); eastmoney 版限流弃用
+#   stock_board_concept_cons_em   -> UNVERIFIED (eastmoney 受限流; ths 无成分股端点) — 待限流解除重探测
 #   stock_lhb_detail_em           -> VERIFIED 2026-08-12 (可达;实际列见 DRAGON_TIGER_SPEC,含 龙虎榜净买额)
 #   stock_gdfx_holding_detail_em  -> UNVERIFIED (eastmoney proxy-blocked)
-# 受阻端点的 rename_map 沿用文档 schema 猜测,首次真实回填前需在开放网络重探测,
-# 否则 map_columns 会静默丢列。
+# 仍受阻端点(估值 spot/成分 cons/股东 holders)的 rename_map 沿用文档 schema 猜测,
+# 待 eastmoney 限流解除或开放网络重探测,否则 map_columns 会静默丢列。
 
 # --- 行业板块 ---
-INDUSTRY_BOARD_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+# 数据源切换(2026-08-12): 板块 LIST/DAILY 由 eastmoney 改接 同花顺(ths, 10jqka.com.cn)。
+# 原因: eastmoney push2/datacenter 端点在真实回填时对本 IP 限流(连 daily_quote/push2his 也会挂),
+# 而 ths 是独立数据商、不受该限流影响, 作全量回填的稳健兜底。ths 列名校准来源(probe 2026-08-12):
+#   stock_board_industry_name_ths -> VERIFIED 90 行业  ['name','code'] (code 形如 881121)
+#   stock_board_industry_index_ths -> VERIFIED ['日期','开盘价','最高价','最低价','收盘价','成交量','成交额']
+#                      (无 涨跌幅 列 -> pct_chg 留空; 需要时可由相邻收盘价计算)
+# 成分股(_cons)仍仅 eastmoney 提供 -> INDUSTRY_CONST_SPEC 保持 eastmoney, 受限流影响(见其注释)。
+INDUSTRY_BOARD_SPEC = Spec(  # VERIFIED (ths stock_board_industry_name_ths probe 2026-08-12, 90 行业)
     name="industry_board", table="industry_board",
-    source=lambda *a, **kw: ak.stock_board_industry_name_em(*a, **kw),
+    source=lambda *a, **kw: ak.stock_board_industry_name_ths(*a, **kw),
     iteration="oneshot",
-    rename_map={"板块名称": "name", "板块代码": "code"},
+    rename_map={"name": "name", "code": "code"},   # ths 列名即 name/code, 直通
     conflict_cols=["name"],
 )
-INDUSTRY_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+INDUSTRY_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney *_cons_em 受限流; ths 无成分股端点) — 待限流解除重探测
     name="industry_const", table="industry_board_const",
     source=lambda *a, **kw: ak.stock_board_industry_cons_em(*a, **kw),
     iteration="per_code",
     rename_map={"板块名称": "board_name", "代码": "code"},
     conflict_cols=["board_name", "code"],
     arg_builder=lambda board: {"symbol": board},
-    key_domain="industry_board",  # Task 11: 迭代键来自 industry_board.name, 非股票代码
+    key_domain="industry_board",  # 迭代键来自 industry_board.name, 非股票代码
 )
-INDUSTRY_BOARD_DAILY_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+INDUSTRY_BOARD_DAILY_SPEC = Spec(  # VERIFIED (ths stock_board_industry_index_ths probe 2026-08-12)
     name="industry_board_daily", table="industry_board_daily",
-    source=lambda *a, **kw: ak.stock_board_industry_hist_em(*a, **kw),
+    source=lambda *a, **kw: ak.stock_board_industry_index_ths(*a, **kw),
     iteration="per_code",
-    rename_map={"日期": "date", "收盘": "close", "涨跌幅": "pct_chg", "成交额": "amount"},
+    # ths index 列: 日期/开盘价/最高价/最低价/收盘价/成交量/成交额; 无 涨跌幅 -> pct_chg 不映射(留空)
+    rename_map={"日期": "date", "收盘价": "close", "成交额": "amount"},
     conflict_cols=["board_name", "date"],
-    arg_builder=lambda board: {"symbol": board, "period": "daily",
-                               "start_date": "20100101", "end_date": "20991231"},
-    const_cols={"board_name": _KEY},  # Task 11: 端点不返回板块名;从迭代键注入
-    key_domain="industry_board",      # Task 11: 迭代键来自 industry_board.name, 非股票代码
+    arg_builder=lambda board: {"symbol": board, "start_date": "20100101", "end_date": "20991231"},
+    const_cols={"board_name": _KEY},  # 端点不返回板块名;从迭代键注入
+    key_domain="industry_board",      # 迭代键来自 industry_board.name, 非股票代码
 )
 
 # --- 概念板块 ---
-CONCEPT_BOARD_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+CONCEPT_BOARD_SPEC = Spec(  # VERIFIED (ths stock_board_concept_name_ths probe 2026-08-12, 375 概念)
     name="concept_board", table="concept_board",
-    source=lambda *a, **kw: ak.stock_board_concept_name_em(*a, **kw),
+    source=lambda *a, **kw: ak.stock_board_concept_name_ths(*a, **kw),
     iteration="oneshot",
-    rename_map={"板块名称": "name", "板块代码": "code"},
+    rename_map={"name": "name", "code": "code"},   # ths 列名即 name/code, 直通
     conflict_cols=["name"],
 )
-CONCEPT_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+CONCEPT_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney *_cons_em 受限流; ths 无成分股端点) — 待限流解除重探测
     name="concept_const", table="concept_board_const",
     source=lambda *a, **kw: ak.stock_board_concept_cons_em(*a, **kw),
     iteration="per_code",
     rename_map={"板块名称": "board_name", "代码": "code"},
     conflict_cols=["board_name", "code"],
     arg_builder=lambda b: {"symbol": b},
-    key_domain="concept_board",  # Task 11: 迭代键来自 concept_board.name, 非股票代码
+    key_domain="concept_board",  # 迭代键来自 concept_board.name, 非股票代码
 )
 
 # --- 资金面 ---

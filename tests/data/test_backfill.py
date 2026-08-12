@@ -24,9 +24,10 @@ def test_run_all_on_seed(tmp_path, mocker):
     mocker.patch("akshare.tool_trade_date_hist_sina",
                  return_value=pd.DataFrame({"trade_date": ["2024-01-02"]}))
     # 财务/板块/宏观等 mock 为空 DF(空 DF 不写)
+    # 注意板块 LIST/DAILY 已改接 ths(2026-08-12): mock 须打 _ths 函数名,否则真实网络调用。
     for fn in ["stock_financial_report_sina", "stock_financial_analysis_indicator",
-               "stock_yjbb_em", "stock_board_industry_name_em", "stock_board_industry_cons_em",
-               "stock_board_industry_hist_em", "stock_board_concept_name_em",
+               "stock_yjbb_em", "stock_board_industry_name_ths", "stock_board_industry_cons_em",
+               "stock_board_industry_index_ths", "stock_board_concept_name_ths",
                "stock_board_concept_cons_em", "stock_margin_sse", "stock_lhb_detail_em",
                "stock_gdfx_holding_detail_em", "macro_china_cpi"]:
         mocker.patch(f"akshare.{fn}", return_value=pd.DataFrame())
@@ -134,10 +135,11 @@ def test_run_all_isolates_failing_spec(tmp_path, mocker):
     mocker.patch("akshare.tool_trade_date_hist_sina",
                  return_value=pd.DataFrame({"trade_date": ["2024-01-02"]}))
     # 其余源 mock 为空 DF,避免真实网络(用 _FastClient 跳过节流/重试,快速跑完)
+    # 注意板块 LIST/DAILY 已改接 ths(2026-08-12): mock 须打 _ths 函数名,否则真实网络调用。
     for fn in ["stock_zh_a_hist", "stock_zh_a_spot_em",
                "stock_financial_report_sina", "stock_financial_analysis_indicator",
-               "stock_yjbb_em", "stock_board_industry_name_em", "stock_board_industry_cons_em",
-               "stock_board_industry_hist_em", "stock_board_concept_name_em",
+               "stock_yjbb_em", "stock_board_industry_name_ths", "stock_board_industry_cons_em",
+               "stock_board_industry_index_ths", "stock_board_concept_name_ths",
                "stock_board_concept_cons_em", "stock_margin_sse", "stock_lhb_detail_em",
                "stock_gdfx_holding_detail_em", "macro_china_cpi"]:
         mocker.patch(f"akshare.{fn}", return_value=pd.DataFrame())

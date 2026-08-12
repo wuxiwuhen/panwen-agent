@@ -39,6 +39,9 @@ make eval-freeze      # 冻结 live→eval,随仓提交以保证指标可复现
 | `performance_express` | 财务 | 11,668 | 全市场 · 报告期 20231231 |
 | `margin_daily` | 资金面 | 2,000 | SSE 融资融券（约最近 8 年，单次上限见下） |
 | `dragon_tiger` | 事件 | 167,832 | 约 11 年龙虎榜明细 |
+| `industry_board` | 板块 | 90 | 行业板块列表（同花顺 ths，90 个二级行业） |
+| `concept_board` | 板块 | 375 | 概念板块列表（同花顺 ths） |
+| `industry_board_daily` | 板块 | 1,700 | 行业板块日线（ths，5 板块有界验证；全 90 板块见下） |
 | `macro_series` | 宏观 | 223 | CPI 同比（`2026年07月份`→`2026-07-01`） |
 
 **数值健全性自检（真实数据）：** 贵州茅台 2026Q1 营收 547.0 亿 / 净利润 281.5 亿；资产负债表 `资产总计 3199.2 亿 = 负债合计 387.8 亿 + 所有者权益合计 2811.4 亿`（会计恒等式成立）；所有 `report_date` 规范化为 `YYYY-MM-DD`。这些是**自建数据层的实测产出**，非任何论文/SOTA 的对标数字。
@@ -46,7 +49,8 @@ make eval-freeze      # 冻结 live→eval,随仓提交以保证指标可复现
 ### 已知限制 / Known limitations
 
 - **网络代理坑 (macOS 系统代理):** akshare/requests 会自动继承 macOS 系统代理设置。若本机开了代理（如 `127.0.0.1:7897`），eastmoney push2/datacenter 等域名常被代理拦截导致 `ProxyError` / `RemoteDisconnected`。回填前先直连：`export NO_PROXY='*' no_proxy='*'`（`scutil --proxy` 可查当前系统代理）。这是**环境问题不是代码缺陷**，开放网络下多数端点正常。
-- **列名校准状态 (2026-08-12 实测):** 以下 rename_map 已对真实数据逐列校准（VERIFIED，回填正常落库）：行情（`stock_info_a_code_name` / `tool_trade_date_hist_sina` / `stock_zh_a_hist` 后复权）、三大报表与财务指标（`stock_financial_report_sina` / `stock_financial_analysis_indicator`）、业绩快报（`stock_yjbb_em`）、融资融券（`stock_margin_sse`）、龙虎榜（`stock_lhb_detail_em`）、宏观 CPI（`macro_china_cpi`）。**仍 UNVERIFIED**（受限网络下 eastmoney push2/datacenter 不可达，列名沿用文档猜测）：行情快照（`stock_zh_a_spot_em`）、行业/概念板块（name/cons/hist）、十大股东（`stock_gdfx_holding_detail_em`）。这些表首次生产回填前须在开放网络用 `scripts/probe_akshare.py` 重探测 —— `map_columns` 会静默丢弃未匹配列，列漂移会导致整张表写空。
+- **列名校准状态 (2026-08-12 实测):** 以下 rename_map 已对真实数据逐列校准（VERIFIED，回填正常落库）：行情（`stock_info_a_code_name` / `tool_trade_date_hist_sina` / `stock_zh_a_hist` 后复权）、三大报表与财务指标（`stock_financial_report_sina` / `stock_financial_analysis_indicator`）、业绩快报（`stock_yjbb_em`）、融资融券（`stock_margin_sse`）、龙虎榜（`stock_lhb_detail_em`）、宏观 CPI（`macro_china_cpi`）、行业/概念板块列表与板块日线（改接同花顺 ths：`stock_board_industry/concept_name_ths` / `stock_board_industry_index_ths`）。**仍 UNVERIFIED**（eastmoney 端点限流/不可达）：行情快照估值（`stock_zh_a_spot_em`，PE/PB/市值/换手率）、板块成分股（`stock_board_*_cons_em`，ths 无对应端点）、十大股东（`stock_gdfx_holding_detail_em`）。这些表的 rename_map 沿用文档 schema 猜测，待 eastmoney 限流解除或开放网络用 `scripts/probe_akshare.py` 重探测 —— `map_columns` 会静默丢弃未匹配列，列漂移会导致整张表写空。
+- **eastmoney 限流（反爬）与 provider 切换:** 真实回填时 eastmoney push2/datacenter 端点会对本 IP 临时限流（高频请求后连日行情 `push2his` 也会 `RemoteDisconnected`），数小时后解除或换 IP 即恢复。故板块 LIST/DAILY 已**改接同花顺(ths, 10jqka)**——ths 是独立数据商、不受 eastmoney 限流影响，作全量回填的稳健兜底（但 ths 不提供成分股与 PE/PB 估值，这两类仍需 eastmoney）。
 - **stock_basic 元数据不完整:** canonical schema 声明了 `listing_date/board/industry/is_st/delist_date`，但 `stock_info_a_code_name` 实测**仅返回 `code/name`**，这些元数据列当前恒为 NULL。完整元数据需换端点（如 `stock_info_sh_name`/交易所列表）或单独补全，列为 MVP 后增强项。
 - **龙虎榜主键收敛:** `dragon_tiger` 主键为 `(code, date)`，`reason`（解读）降为可空属性。原因：真实 lhb 数据的「解读」字段存在空值，作为主键分量会触发 NOT NULL 约束整批失败；`(code, date)` 是稳定自然键。同一股同日因多原因上榜按 last-write-wins 合并（`reason` 取末行值）。
 - **资产负债表总权益列:** `total_equity` 取 `所有者权益(或股东权益)合计`（= 归属于母公司股东权益合计 + 少数股东权益）。同端点另有裸列「所有者权益」实测**恒为空**，不可误用。该列名含**半角**括号 `( )`（非全角），rename_map 须逐字精确。
