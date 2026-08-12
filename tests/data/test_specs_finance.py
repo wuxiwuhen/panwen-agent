@@ -12,9 +12,14 @@ def test_finance_specs_present():
 
 def test_financial_indicator_runs(tmp_path, mocker):
     conn = _conn(tmp_path)
+    # T5: 原 mock 喂 总资产报酬率(%)/市盈率/市净率,但真实 FIN_INDICATOR_SPEC.rename_map
+    # 用 总资产净利润率(%) (roa) 且已删除 pe/pb(由 spot_snapshot 提供)。原 mock 与真实
+    # rename_map 错位 -> 该测试并未真正练习当前映射。现对齐真实 rename_map,并断言 roa
+    # (不只 roe),让测试真正覆盖当前映射。
     mocker.patch("akshare.stock_financial_analysis_indicator", return_value=pd.DataFrame({
         "日期":["2023-12-31"],"股票代码":["000001"],"净资产收益率(%)":[12.0],
-        "总资产报酬率(%)":[8.0],"销售毛利率(%)":[40.0],"销售净利率(%)":[20.0],
-        "资产负债率(%)":[60.0],"市盈率":[8.0],"市净率":[1.0]}))
+        "总资产净利润率(%)":[8.0],"销售毛利率(%)":[40.0],"销售净利率(%)":[20.0],
+        "资产负债率(%)":[60.0]}))
     runner.run_ingest(conn, specs.FIN_INDICATOR_SPEC, client=clientmod, code_source=["000001"])
     assert conn.execute("SELECT roe FROM financial_indicator").fetchone()[0] == 12.0
+    assert conn.execute("SELECT roa FROM financial_indicator").fetchone()[0] == 8.0

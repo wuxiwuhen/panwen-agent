@@ -70,6 +70,25 @@ def test_board_spec_uses_board_names_not_codes(tmp_path, mocker):
     assert spy.call_args.kwargs.get("symbol") == "小金属"
 
 
+def test_concept_board_spec_uses_board_names_not_codes(tmp_path, mocker):
+    """T4: 概念板块键路由(镜像行业板块测试)。per_code 概念 spec 的迭代键应来自
+    concept_board 表(概念名),而非股票代码种子。路由逻辑同行业板块,但此前无回归
+    覆盖;CONCEPT_CONST_SPEC 若被回退成股票代码键,会以股票代码为 symbol 调用源(语义错)。
+    """
+    conn = db.connect(str(tmp_path / "t.duckdb"))
+    db.init_schema(conn)
+    # 先填充概念板块列表表(模拟 oneshot CONCEPT_BOARD_SPEC 已跑过)
+    conn.execute("INSERT INTO concept_board VALUES ('新能源', 'GN0001')")
+    spy = mocker.patch("akshare.stock_board_concept_cons_em",
+                       return_value=pd.DataFrame({"板块名称": ["新能源"], "代码": ["000001"]}))
+    # _key_source 应丢弃股票代码 600519, 路由到概念名 "新能源"
+    keys = backfill._key_source(conn, specs.CONCEPT_CONST_SPEC, ["600519"])
+    assert keys == ["新能源"]
+    # 用路由后的键跑 run_ingest, 验证概念名(而非股票代码)到达数据源
+    runner.run_ingest(conn, specs.CONCEPT_CONST_SPEC, client=clientmod, code_source=keys)
+    assert spy.call_args.kwargs.get("symbol") == "新能源"
+
+
 def test_empty_board_table_no_fallback_to_stock_codes(tmp_path, mocker):
     """Important #1 回归: 板块表为空时,绝不可回退到股票代码当作板块键。
 
