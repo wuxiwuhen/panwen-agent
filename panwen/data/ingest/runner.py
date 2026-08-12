@@ -1,5 +1,7 @@
 # panwen/data/ingest/runner.py
 import duckdb
+import pandas as pd
+from panwen.data import schema
 from panwen.data.ingest.specs import Spec, _KEY
 from panwen.data.ingest import mapping, loader, client as _client
 from panwen.data.ingest.checkpoint import Checkpoint
@@ -28,6 +30,7 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
             print(f"[drift] {spec.name}: source returned {raw_rows} rows but 0 matched "
                   f"rename_map — column drift suspected")
         df = _apply_const(df, spec.const_cols, key=None)
+        df = _normalize_dates(df, spec.table)
         return loader.upsert_df(conn, spec.table, df, spec.conflict_cols)
 
     # 迭代型: 选出待处理 keys,断点续传
@@ -61,6 +64,7 @@ def run_ingest(conn: duckdb.DuckDBPyConnection, spec: Spec, *,
                       f"will retry next run")
                 continue
             df = _apply_const(df, spec.const_cols, key=k)
+            df = _normalize_dates(df, spec.table)
             total += loader.upsert_df(conn, spec.table, df, spec.conflict_cols)
             if checkpoint:
                 checkpoint.mark(spec.name, k)
@@ -79,6 +83,33 @@ def _apply_const(df, const_cols: dict, key):
     """
     for col, val in const_cols.items():
         df[col] = key if val is _KEY else val
+    return df
+
+
+def _normalize_dates(df, table):
+    """把 df 中属于该表 date 类型(schema.COLUMN_CLASS)的列规范化为 'YYYY-MM-DD' 字符串。
+
+    akshare 各端点日期格式不一:
+      - stock_financial_report_sina 报告日:        紧凑式 '20240630'
+      - stock_financial_analysis_indicator 日期:   '2023-12-31'
+      - macro_china_cpi 月份:                      中文 '2026年07月份' (仅年月, 无日)
+      - 上榜日 / 交易日 等:                         格式各异
+    DuckDB DATE 列要求 YYYY-MM-DD, 不规范化会导致 upsert 'invalid date field format' 整批失败
+    (真实回填 2026-08-12 暴露: income/balance/cashflow 因此写 0 行); CPI 的中文月份还会让
+    pd.to_datetime 解析失败 -> NaT -> NULL -> macro_series.date(PK)违约, 整批 0 行。
+    统一在此收口: 先剥离中文 年/月份/月/日 token(顺序敏感, 月份 须先于 月), 再 format='mixed'
+    解析(兼容紧凑/横线/ISO, 且消除 'Could not infer format' 警告); 仅年月无日者(如 CPI)默认取该月 1 号。
+    对已合规格式为 no-op; 无法解析 -> NaT -> NULL(写库时若该列在 PK 中会按约束失败, 由 per-key
+    try/except 兜底)。"""
+    date_cols = [c for c, t in schema.COLUMN_CLASS.get(table, {}).items() if t == "date"]
+    for col in date_cols:
+        if col in df.columns:
+            s = (df[col].astype(str)
+                 .str.replace("年", "-", regex=False)
+                 .str.replace("月份", "", regex=False)   # 须先于单字 月 (子串优先)
+                 .str.replace("月", "-", regex=False)    # 全角日期中段的月 -> '-'
+                 .str.replace("日", "", regex=False))    # 尾部 日
+            df[col] = pd.to_datetime(s, errors="coerce", format="mixed").dt.strftime("%Y-%m-%d")
     return df
 
 

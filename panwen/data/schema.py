@@ -48,7 +48,7 @@ PRIMARY_KEYS: dict[str, list[str]] = {
     "industry_board": ["name"], "industry_board_const": ["board_name", "code"],
     "industry_board_daily": ["board_name", "date"],
     "concept_board": ["name"], "concept_board_const": ["board_name", "code"],
-    "margin_daily": ["date", "market"], "dragon_tiger": ["code", "date", "reason"],
+    "margin_daily": ["date", "market"], "dragon_tiger": ["code", "date"],
     "top10_holders": ["code", "report_date", "rank", "holder_type"],
     "macro_series": ["indicator", "date"],
 }

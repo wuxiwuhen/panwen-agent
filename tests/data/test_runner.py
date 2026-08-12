@@ -151,3 +151,81 @@ def test_oneshot_with_key_const_col_asserts(tmp_path):
                 const_cols={"code": _KEY})  # oneshot 不该用 _KEY
     with pytest.raises(AssertionError):
         runner.run_ingest(conn, spec, client=FakeClient())
+
+
+# ---- 真实数据回归: 日期格式规范化(2026-08-12 暴露) ----
+
+def test_date_normalization_compact_to_iso(tmp_path, mocker):
+    """真实回填 2026-08-12 暴露的 bug 回归: stock_financial_report_sina 返回紧凑式
+    报告日 '20240630',而 DuckDB DATE 列要求 'YYYY-MM-DD',不规范化会导致 upsert 整批
+    'invalid date field format' 失败(income/balance/cashflow 因此写 0 行)。
+    runner._normalize_dates 须把 date 类列(见 schema.COLUMN_CLASS)统一为 YYYY-MM-DD。
+    """
+    conn = _conn(tmp_path)
+    # 紧凑式日期 + 中文财务列(模拟 stock_financial_report_sina 利润表返回)
+    fake_src = mocker.Mock(return_value=pd.DataFrame({
+        "报告日": ["20240630", "20231231"],   # 紧凑式,非 ISO
+        "营业总收入": [100.0, 90.0],
+        "营业成本": [60.0, 55.0],
+        "净利润": [40.0, 35.0]}))
+    spec = Spec(name="income", table="income_statement", source=fake_src,
+                iteration="per_code",
+                rename_map={"报告日": "report_date", "营业总收入": "revenue",
+                            "营业成本": "oper_cost", "净利润": "net_profit"},
+                conflict_cols=["code", "report_date"],
+                arg_builder=lambda code: {"symbol": code},
+                const_cols={"code": _KEY})  # 端点不返回股票代码,从迭代键注入
+    n = runner.run_ingest(conn, spec, client=FakeClient(), code_source=["600519"])
+    assert n == 2  # 两行都应成功落库(未规范化则 0 行)
+    # DATE 列读回为 datetime.date -> 用 cast 取字符串,确认已规范化为 ISO
+    rows = conn.execute(
+        "SELECT cast(report_date as varchar) FROM income_statement "
+        "ORDER BY report_date").fetchall()
+    assert [r[0] for r in rows] == ["2023-12-31", "2024-06-30"]
+    # code 列由 const_cols(_KEY)注入,确认非空
+    assert conn.execute("SELECT code FROM income_statement LIMIT 1").fetchone()[0] == "600519"
+
+
+def test_date_normalization_already_iso_is_noop(tmp_path, mocker):
+    """已合规的 ISO 日期('2024-06-30')经 _normalize_dates 应保持不变(no-op),
+    不得误伤(如截断成 NULL)。对照上例的紧凑式,确保规范化对两种格式都安全。
+    """
+    conn = _conn(tmp_path)
+    fake_src = mocker.Mock(return_value=pd.DataFrame({
+        "报告日": ["2024-06-30", "2023-12-31"],   # 已是 ISO 带横线
+        "营业总收入": [100.0, 90.0],
+        "营业成本": [60.0, 55.0],
+        "净利润": [40.0, 35.0]}))
+    spec = Spec(name="income", table="income_statement", source=fake_src,
+                iteration="per_code",
+                rename_map={"报告日": "report_date", "营业总收入": "revenue",
+                            "营业成本": "oper_cost", "净利润": "net_profit"},
+                conflict_cols=["code", "report_date"],
+                const_cols={"code": _KEY})
+    runner.run_ingest(conn, spec, client=FakeClient(), code_source=["600519"])
+    rows = conn.execute(
+        "SELECT cast(report_date as varchar) FROM income_statement "
+        "ORDER BY report_date").fetchall()
+    assert [r[0] for r in rows] == ["2023-12-31", "2024-06-30"]
+
+
+def test_date_normalization_chinese_month(tmp_path, mocker):
+    """真实回填 2026-08-12 暴露: macro_china_cpi 的 月份 为中文 '2026年07月份' (仅年月无日),
+    通用 pd.to_datetime 无法解析 -> NaT -> NULL -> macro_series.date(PK)违约, 整批写 0 行。
+    _normalize_dates 须剥离 年/月份 token 后解析, 仅年月者默认取该月 1 号 ('2026-07-01')。"""
+    conn = _conn(tmp_path)
+    fake_src = mocker.Mock(return_value=pd.DataFrame({
+        "月份": ["2026年07月份", "2025年12月份"],   # 中文年月, 无日
+        "全国-同比增长": [2.7, -0.3],
+    }))
+    spec = Spec(name="macro_cpi", table="macro_series", source=fake_src,
+                iteration="oneshot",
+                rename_map={"月份": "date", "全国-同比增长": "value"},
+                conflict_cols=["indicator", "date"],
+                const_cols={"indicator": "CPI_YOY"})  # indicator 由 const_cols 注入
+    n = runner.run_ingest(conn, spec, client=FakeClient())
+    assert n == 2  # 未规范化则 0 行(中文月份 PK 违约)
+    rows = conn.execute(
+        "SELECT cast(date as varchar) FROM macro_series ORDER BY date").fetchall()
+    assert [r[0] for r in rows] == ["2025-12-01", "2026-07-01"]  # 年月 -> 该月 1 号
+    assert conn.execute("SELECT indicator FROM macro_series LIMIT 1").fetchone()[0] == "CPI_YOY"

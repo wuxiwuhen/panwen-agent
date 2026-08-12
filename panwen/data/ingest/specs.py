@@ -100,9 +100,9 @@ from panwen.data.ingest.mapping import to_sina_code
 #                     端点可达,实际列见 FIN_INDICATOR_SPEC 注释(roa=总资产净利润率(%) 等)。
 #                     端点不返回 股票代码/市盈率/市净率 -> code 由 const_cols 注入; pe/pb 见 spot_snapshot。
 #   stock_yjbb_em                      -> VERIFIED (Task 11 probe 2026-08-12, PERFORMANCE_SPEC)。
-#   stock_financial_report_sina        -> 仍在 Task 4 探测中被 ProxyError 阻断(sina 上游),
-#                     下列 INCOME/BALANCE/CASHFLOW 的 rename_map 为文档 schema 猜测, NOT VERIFIED。
-#                     首次真实回填前需在开放网络用 probe_akshare.py 重探,否则 map_columns 会静默丢列。
+#   stock_financial_report_sina        -> VERIFIED (probe 2026-08-12, sh600519 非银行, 三大报表):
+#                     INCOME/BALANCE/CASHFLOW rename_map 已按真实列名校准(资产总计/负债合计、
+#                     经营/投资/筹资活动产生的现金流量净额 等);端点不返回 股票代码 -> code 由 const_cols 注入。
 def _report_arg(stmt):  # stmt: "利润表"/"资产负债表"/"现金流量表"
     return lambda code: {"stock": to_sina_code(code), "symbol": stmt}
 
@@ -110,25 +110,42 @@ INCOME_SPEC = Spec(
     name="income", table="income_statement",
     source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
     iteration="per_code",
-    rename_map={"报告日": "report_date", "股票代码": "code", "营业总收入": "revenue",
+    # 列名校准: probe 2026-08-12 (stock_financial_report_sina 利润表, sh600519 非银行) VERIFIED
+    #   实际列含 报告日/营业总收入/营业成本/净利润。端点不返回 股票代码 -> code 由 const_cols 注入。
+    rename_map={"报告日": "report_date", "营业总收入": "revenue",
                 "营业成本": "oper_cost", "净利润": "net_profit"},
     conflict_cols=["code", "report_date"], arg_builder=_report_arg("利润表"),
+    const_cols={"code": _KEY},  # 端点不返回股票代码;从 per_code 迭代键注入
 )
 BALANCE_SPEC = Spec(
     name="balance", table="balance_sheet",
     source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
     iteration="per_code",
-    rename_map={"报告日": "report_date", "股票代码": "code", "总资产": "total_assets",
-                "总负债": "total_liab", "所有者权益": "total_equity"},
+    # 列名校准: probe 2026-08-12 (资产负债表, sh600519) VERIFIED
+    #   实际列为 资产总计/负债合计/所有者权益(或股东权益)合计 (非旧 schema 猜测的 总资产/总负债)。
+    #   注意: 同端点另有裸列「所有者权益」实测恒为空(nan) —— 不可用作 total_equity。
+    #   正确的总权益 = 归属于母公司股东权益合计 + 少数股东权益 = 所有者权益(或股东权益)合计
+    #   (probe 实测 600519: 270,894,035,676.27 + 10,241,850,759.42 = 281,135,886,435.69 ✓)。
+    #   列名含半角括号 (0x28/0x29),非全角 —— rename_map 须逐字精确,否则 map_columns 静默丢列。
+    #   端点不返回 股票代码 -> code 由 const_cols 注入。
+    rename_map={"报告日": "report_date", "资产总计": "total_assets",
+                "负债合计": "total_liab", "所有者权益(或股东权益)合计": "total_equity"},
     conflict_cols=["code", "report_date"], arg_builder=_report_arg("资产负债表"),
+    const_cols={"code": _KEY},
 )
 CASHFLOW_SPEC = Spec(
     name="cashflow", table="cashflow_statement",
     source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
     iteration="per_code",
-    rename_map={"报告日": "report_date", "股票代码": "code",
-                "经营现金流": "op_cf", "投资现金流": "inv_cf", "筹资现金流": "fin_cf"},
+    # 列名校准: probe 2026-08-12 (现金流量表, sh600519) VERIFIED
+    #   实际列为 经营/投资/筹资活动产生的现金流量净额 (非旧猜测 经营/投资/筹资现金流);
+    #   端点不返回 股票代码 -> code 由 const_cols 注入。
+    rename_map={"报告日": "report_date",
+                "经营活动产生的现金流量净额": "op_cf",
+                "投资活动产生的现金流量净额": "inv_cf",
+                "筹资活动产生的现金流量净额": "fin_cf"},
     conflict_cols=["code", "report_date"], arg_builder=_report_arg("现金流量表"),
+    const_cols={"code": _KEY},
 )
 FIN_INDICATOR_SPEC = Spec(
     name="fin_indicator", table="financial_indicator",
@@ -191,7 +208,7 @@ def build_finance_specs():
 #   stock_board_industry_hist_em  -> UNVERIFIED (eastmoney proxy-blocked)
 #   stock_board_concept_name_em   -> UNVERIFIED (eastmoney push2 ProxyError)
 #   stock_board_concept_cons_em   -> UNVERIFIED (eastmoney proxy-blocked)
-#   stock_lhb_detail_em           -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_lhb_detail_em           -> VERIFIED 2026-08-12 (可达;实际列见 DRAGON_TIGER_SPEC,含 龙虎榜净买额)
 #   stock_gdfx_holding_detail_em  -> UNVERIFIED (eastmoney proxy-blocked)
 # 受阻端点的 rename_map 沿用文档 schema 猜测,首次真实回填前需在开放网络重探测,
 # 否则 map_columns 会静默丢列。
@@ -254,12 +271,18 @@ MARGIN_SPEC = Spec(  # VERIFIED (stock_margin_sse 探测 2026-08-12);market 列�
     extra_kwargs={"start_date": "20150101", "end_date": "20991231"},
     const_cols={"market": "sse"},  # Task 11: 静态常量列(SSE 融资融券),run_ingest 注入
 )
-DRAGON_TIGER_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+DRAGON_TIGER_SPEC = Spec(  # VERIFIED (stock_lhb_detail_em probe 2026-08-12, reachable)
     name="dragon_tiger", table="dragon_tiger",
     source=lambda *a, **kw: ak.stock_lhb_detail_em(*a, **kw),
     iteration="oneshot",
-    rename_map={"代码": "code", "上榜日": "date", "解读": "reason", "净买入": "net_buy"},
-    conflict_cols=["code", "date", "reason"],
+    # 列名校准: probe 2026-08-12 VERIFIED 实际列含 代码/上榜日/解读/龙虎榜净买额 (非旧猜测 净买入)。
+    rename_map={"代码": "code", "上榜日": "date", "解读": "reason", "龙虎榜净买额": "net_buy"},
+    # PK 收敛为 (code, date): 真实 lhb 数据的「解读」(reason) 存在空值,作为 PK 分量会触发
+    # NOT NULL 约束整批失败(真实回填 2026-08-12 暴露: ConstraintException reason)。
+    # reason 降为普通可空属性保留(DuckDB 非 PK TEXT 列允许 NULL)。(code, date) 是龙虎榜的
+    # 稳定自然键;同一股同日因多原因上榜时按 last-write-wins 合并(reason 取末行值)。
+    # schema.PRIMARY_KEYS["dragon_tiger"] 已同步改为 ["code", "date"]。
+    conflict_cols=["code", "date"],
     extra_kwargs={"start_date": "20150101", "end_date": "20991231"},
 )
 
