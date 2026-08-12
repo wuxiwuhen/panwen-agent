@@ -133,3 +133,124 @@ PERFORMANCE_SPEC = Spec(  # 业绩快报: 按报告期全市场批量
 
 def build_finance_specs():
     return [INCOME_SPEC, BALANCE_SPEC, CASHFLOW_SPEC, FIN_INDICATOR_SPEC, PERFORMANCE_SPEC]
+
+
+# ===== 行业板块 / 概念板块 / 资金面 / 宏观 / 事件域 (Task 10) =====
+#
+# 常量列注入(const-col injection)—— Task 11 实现,本任务仅声明 spec。
+# 下列 spec 需要一列 akshare 端点不返回,须在 Task 11 的 backfill 编排里于
+# map_columns 之后注入(给 run_ingest 加 post_map 钩子或特例两行补列):
+#   - MARGIN_SPEC                -> inject market="sse"
+#   - MACRO_CPI_SPEC             -> inject indicator="CPI_YOY"
+#                                   (extra_kwargs["__indicator"] 是 INTENTIONAL magic key:
+#                                    Task 11 在 fetch 前剥离 __ 前缀键、用于注入。
+#                                    勿在 Task 10 中"修正"或移除。)
+#   - INDUSTRY_BOARD_DAILY_SPEC  -> inject board_name=<iteration key>
+#   - FIN_INDICATOR_SPEC (Task 9 承接) -> inject code=<iteration key>
+# 这些 spec 的 conflict_cols 引用了被注入列;在 Task 11 注入前不要真实回填这些表。
+#
+# 列名校准来源(probe 2026-08-12):
+#   stock_margin_sse (SSE)        -> VERIFIED  ['信用交易日期','融资余额','融资买入额',
+#                                    '融券余量','融券余量金额','融券卖出量','融资融券余额']
+#   macro_china_cpi (国家统计局)   -> VERIFIED  ['月份','全国-当月','全国-同比增长',
+#                                    '全国-环比增长','全国-累计','城市-当月', ...]
+#   stock_board_industry_name_em  -> UNVERIFIED (eastmoney push2 ProxyError)
+#   stock_board_industry_cons_em  -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_board_industry_hist_em  -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_board_concept_name_em   -> UNVERIFIED (eastmoney push2 ProxyError)
+#   stock_board_concept_cons_em   -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_lhb_detail_em           -> UNVERIFIED (eastmoney proxy-blocked)
+#   stock_gdfx_holding_detail_em  -> UNVERIFIED (eastmoney proxy-blocked)
+# 受阻端点的 rename_map 沿用文档 schema 猜测,首次真实回填前需在开放网络重探测,
+# 否则 map_columns 会静默丢列。
+
+# --- 行业板块 ---
+INDUSTRY_BOARD_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="industry_board", table="industry_board",
+    source=lambda *a, **kw: ak.stock_board_industry_name_em(*a, **kw),
+    iteration="oneshot",
+    rename_map={"板块名称": "name", "板块代码": "code"},
+    conflict_cols=["name"],
+)
+INDUSTRY_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="industry_const", table="industry_board_const",
+    source=lambda *a, **kw: ak.stock_board_industry_cons_em(*a, **kw),
+    iteration="per_code",
+    rename_map={"板块名称": "board_name", "代码": "code"},
+    conflict_cols=["board_name", "code"],
+    arg_builder=lambda board: {"symbol": board},
+)
+INDUSTRY_BOARD_DAILY_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="industry_board_daily", table="industry_board_daily",
+    source=lambda *a, **kw: ak.stock_board_industry_hist_em(*a, **kw),
+    iteration="per_code",
+    rename_map={"日期": "date", "收盘": "close", "涨跌幅": "pct_chg", "成交额": "amount"},
+    conflict_cols=["board_name", "date"],
+    arg_builder=lambda board: {"symbol": board, "period": "daily",
+                               "start_date": "20100101", "end_date": "20991231"},
+)
+
+# --- 概念板块 ---
+CONCEPT_BOARD_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="concept_board", table="concept_board",
+    source=lambda *a, **kw: ak.stock_board_concept_name_em(*a, **kw),
+    iteration="oneshot",
+    rename_map={"板块名称": "name", "板块代码": "code"},
+    conflict_cols=["name"],
+)
+CONCEPT_CONST_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="concept_const", table="concept_board_const",
+    source=lambda *a, **kw: ak.stock_board_concept_cons_em(*a, **kw),
+    iteration="per_code",
+    rename_map={"板块名称": "board_name", "代码": "code"},
+    conflict_cols=["board_name", "code"],
+    arg_builder=lambda b: {"symbol": b},
+)
+
+# --- 资金面 ---
+MARGIN_SPEC = Spec(  # VERIFIED (stock_margin_sse 探测 2026-08-12);market 列由 Task 11 注入
+    name="margin", table="margin_daily",
+    source=lambda *a, **kw: ak.stock_margin_sse(*a, **kw),
+    iteration="oneshot",
+    rename_map={"信用交易日期": "date", "融资余额": "rzye",
+                "融券余量金额": "rqye", "融资融券余额": "rzrqye"},
+    conflict_cols=["date", "market"],
+    extra_kwargs={"start_date": "20150101", "end_date": "20991231"},
+)
+DRAGON_TIGER_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="dragon_tiger", table="dragon_tiger",
+    source=lambda *a, **kw: ak.stock_lhb_detail_em(*a, **kw),
+    iteration="oneshot",
+    rename_map={"代码": "code", "上榜日": "date", "解读": "reason", "净买入": "net_buy"},
+    conflict_cols=["code", "date", "reason"],
+    extra_kwargs={"start_date": "20150101", "end_date": "20991231"},
+)
+
+# --- 公司事件 (🟡批次) ---
+TOP10_HOLDERS_SPEC = Spec(  # UNVERIFIED (eastmoney proxy-blocked) — re-probe on open network before first backfill
+    name="top10_holders", table="top10_holders",
+    source=lambda *a, **kw: ak.stock_gdfx_holding_detail_em(*a, **kw),
+    iteration="per_code",
+    rename_map={"股票代码": "code", "报告期": "report_date", "名次": "rank",
+                "股东名称": "holder_name", "持股数量": "hold_amount",
+                "持股比例": "hold_ratio", "股东性质": "holder_type"},
+    conflict_cols=["code", "report_date", "rank", "holder_type"],
+    arg_builder=lambda code: {"symbol": code},
+)
+
+# --- 宏观 ---
+MACRO_CPI_SPEC = Spec(  # VERIFIED (macro_china_cpi 探测 2026-08-12);indicator 列由 Task 11 注入
+    name="macro_cpi", table="macro_series",
+    source=lambda *a, **kw: ak.macro_china_cpi(*a, **kw),
+    iteration="oneshot",
+    rename_map={"月份": "date", "全国-同比增长": "value"},
+    conflict_cols=["indicator", "date"],
+    extra_kwargs={"__indicator": "CPI_YOY"},  # INTENTIONAL magic key: Task 11 fetch 前剥离 __ 前缀、用于注入 indicator 列。勿移除。
+)
+
+
+def build_domain_specs():
+    """行业板块/概念板块/资金面/宏观/事件域 spec 集合(9 张 canonical 表)。"""
+    return [INDUSTRY_BOARD_SPEC, INDUSTRY_CONST_SPEC, INDUSTRY_BOARD_DAILY_SPEC,
+            CONCEPT_BOARD_SPEC, CONCEPT_CONST_SPEC,
+            MARGIN_SPEC, DRAGON_TIGER_SPEC, TOP10_HOLDERS_SPEC, MACRO_CPI_SPEC]
