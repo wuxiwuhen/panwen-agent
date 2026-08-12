@@ -2,7 +2,7 @@
 
 > 用中文问盘：A 股自然语言查询 Agent
 
-**状态 / Status:** Phase 1 数据层 + Phase 2 Agent 核心（Agent Core）。数据层（akshare → DuckDB）已在真实数据上端到端验证；Agent 核心层（9 步确定性管线 + ValidSQL + 双路 RAG + 有界自纠错 + 冻结评测集）已实现并通过 98 项单元/集成测试（pytest 全绿）。**端到端问答需自备 LLM API key 跑 `make eval` 实测指标**（指标为自建冻结集实测，非跨域基准，详见下文「诚实口径」）。
+**状态 / Status:** Phase 1 数据层 + Phase 2 Agent 核心（Agent Core）。数据层（akshare → DuckDB）已在真实数据上端到端验证；Agent 核心层（9 步确定性管线 + ValidSQL + 双路 RAG + 有界自纠错 + 冻结评测集）已实现并通过 99 项单元/集成测试（pytest 全绿）。**端到端问答需自备 LLM API key 跑 `make eval` 实测指标**（指标为自建冻结集实测，非跨域基准，详见下文「诚实口径」）。
 
 ---
 
@@ -26,7 +26,7 @@ make eval                     # 首次会下载 bge-large-zh-v1.5（~1.3GB）
 
 ### 诚实口径 / Honest claims
 
-- **指标全部实测，绝不编造。** 上述能力已通过 98 项单元/集成测试验证（管线分支、ValidSQL 各检查、RAG 召回、自纠错预算、评分边界）。**端到端执行准确率 / ablation 百分比须由你在本地 `make eval` 实测**——本仓库不预填任何准确率数字。
+- **指标全部实测，绝不编造。** 上述能力已通过 99 项单元/集成测试验证（管线分支、ValidSQL 各检查、RAG 召回、自纠错预算、评分边界）。**端到端执行准确率 / ablation 百分比须由你在本地 `make eval` 实测**——本仓库不预填任何准确率数字。
 - 跨域基准（如 Hermes 54%→93%、GRPO 87.3%）是**他人成果**，仅作对比参照，绝不冒认为本项目指标。
 - ValidSQL check 5（参数化）当前为顾问式（见上），不声称其在 MVP 阻断。
 - 交互式 Demo UI（Gradio/Streamlit）为独立后续计划，不在 Plan 2 内。
