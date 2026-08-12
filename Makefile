@@ -1,4 +1,4 @@
-.PHONY: install seed-backfill data-backfill data-incremental task0-financials eval-freeze test
+.PHONY: install seed-backfill data-backfill data-incremental task0-financials eval-freeze eval test
 
 install:
 	pip install -e ".[dev]"
@@ -45,3 +45,10 @@ eval-freeze:
 
 test:
 	pytest -v
+
+# Task 8: 一键复现评测 —— 跑全集(全开配置) + 逐组件 ablation 矩阵，打印实测指标。
+# 需 DEEPSEEK_API_KEY (或 GLM_API_KEY) 与 rag extra (bge ~1.3GB 模型首次自动下载)。
+# 指标全部实测，绝不编造；详细说明见 scripts/run_eval.py。
+eval:
+	mkdir -p data
+	python scripts/run_eval.py
