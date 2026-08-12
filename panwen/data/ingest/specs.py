@@ -73,3 +73,63 @@ SPOT_SPEC = Spec(
 
 def build_quote_specs():
     return [STOCK_BASIC_SPEC, TRADE_CAL_SPEC, DAILY_QUOTE_SPEC, SPOT_SPEC]
+
+
+from panwen.data.ingest.mapping import to_sina_code
+
+# ===== 财务域 =====
+# 列名校准来源: stock_financial_analysis_indicator / stock_em_yjbb / stock_financial_report_sina
+# 均在 Task 4 探测中被 ProxyError 阻断(eastmoney 上游),所以下列 rename_map 为
+# 文档 schema 猜测,NOT VERIFIED。首次真实回填前需在开放网络用 probe_akshare.py 重探,
+# 否则 map_columns 会静默丢列。仅 FIN_INDICATOR_SPEC 的中文 key 与本任务 mock 测试 df
+# 对齐以保证测试通过 —— 这并不代表真实 akshare 列名。
+def _report_arg(stmt):  # stmt: "利润表"/"资产负债表"/"现金流量表"
+    return lambda code: {"stock": to_sina_code(code), "symbol": stmt}
+
+INCOME_SPEC = Spec(
+    name="income", table="income_statement",
+    source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
+    iteration="per_code",
+    rename_map={"报告日": "report_date", "股票代码": "code", "营业总收入": "revenue",
+                "营业成本": "oper_cost", "净利润": "net_profit"},
+    conflict_cols=["code", "report_date"], arg_builder=_report_arg("利润表"),
+)
+BALANCE_SPEC = Spec(
+    name="balance", table="balance_sheet",
+    source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
+    iteration="per_code",
+    rename_map={"报告日": "report_date", "股票代码": "code", "总资产": "total_assets",
+                "总负债": "total_liab", "所有者权益": "total_equity"},
+    conflict_cols=["code", "report_date"], arg_builder=_report_arg("资产负债表"),
+)
+CASHFLOW_SPEC = Spec(
+    name="cashflow", table="cashflow_statement",
+    source=lambda *a, **kw: ak.stock_financial_report_sina(*a, **kw),
+    iteration="per_code",
+    rename_map={"报告日": "report_date", "股票代码": "code",
+                "经营现金流": "op_cf", "投资现金流": "inv_cf", "筹资现金流": "fin_cf"},
+    conflict_cols=["code", "report_date"], arg_builder=_report_arg("现金流量表"),
+)
+FIN_INDICATOR_SPEC = Spec(
+    name="fin_indicator", table="financial_indicator",
+    source=lambda *a, **kw: ak.stock_financial_analysis_indicator(*a, **kw),
+    iteration="per_code",
+    rename_map={"日期": "report_date", "股票代码": "code", "净资产收益率(%)": "roe",
+                "总资产报酬率(%)": "roa", "销售毛利率(%)": "gross_margin",
+                "销售净利率(%)": "net_margin", "资产负债率(%)": "debt_ratio",
+                "市盈率": "pe", "市净率": "pb"},
+    conflict_cols=["code", "report_date"],
+    arg_builder=lambda code: {"symbol": code, "start_year": "2015"},
+)
+PERFORMANCE_SPEC = Spec(  # 业绩快报: 按报告期全市场批量
+    name="performance", table="performance_express",
+    source=lambda *a, **kw: ak.stock_em_yjbb(*a, **kw),
+    iteration="per_period",
+    rename_map={"股票代码": "code", "报告日": "report_date",
+                "营业收入-同比增长": "revenue_yoy", "净利润-同比增长": "net_profit_yoy"},
+    conflict_cols=["code", "report_date"],
+    arg_builder=lambda period: {"date": period},
+)
+
+def build_finance_specs():
+    return [INCOME_SPEC, BALANCE_SPEC, CASHFLOW_SPEC, FIN_INDICATOR_SPEC, PERFORMANCE_SPEC]
