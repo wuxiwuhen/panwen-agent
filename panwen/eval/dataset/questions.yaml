@@ -1,0 +1,220 @@
+# Plan 2 评测集(starter 24 题;执行期按 §8.1 补到 150)
+# 难度分层配额(目标 150): simple ~40 / join ~50 / aggregate ~40 / domain ~20
+#   + out_of_scope 陷阱题(集中放 tags:[out_of_scope], gold_sql: null)用于 Task 8 范围门增益 ablation
+# answerable_on = Task 0 实测冻结日 2026-06-30(eval.duckdb max(report_date)=2026-06-30)
+#
+# schema 注意(已对齐 eval.duckdb 实测列名):
+#   balance_sheet: total_liab / total_equity (NOT total_liabilities)
+#   margin_daily:  rzye / rqye / rzrqye      (NOT margin_balance)
+#   macro_series:  indicator / date / value  (NOT name)
+# 空表(不可命中): spot_snapshot / industry_board_const / concept_board_const / top10_holders
+
+# ===== simple: 单股财务深查 =====
+- question: 贵州茅台最近一年的净利润是多少
+  gold_sql: SELECT report_date, net_profit FROM income_statement WHERE code='600519' ORDER BY report_date DESC LIMIT 1
+  difficulty: simple
+  tags: [单股, 财务, 利润]
+  answerable_on: "2026-06-30"
+
+- question: 平安银行最新资产负债率
+  gold_sql: SELECT report_date, debt_ratio FROM financial_indicator WHERE code='000001' ORDER BY report_date DESC LIMIT 1
+  difficulty: simple
+  tags: [单股, 财务, 指标]
+  answerable_on: "2026-06-30"
+
+- question: 比亚迪近三年的毛利率走势
+  gold_sql: SELECT report_date, gross_margin FROM financial_indicator WHERE code='002594' ORDER BY report_date DESC LIMIT 12
+  difficulty: simple
+  tags: [单股, 财务, 时序]
+  answerable_on: "2026-06-30"
+
+- question: 招商银行最新一期总资产是多少
+  gold_sql: SELECT report_date, total_assets FROM balance_sheet WHERE code='600036' ORDER BY report_date DESC LIMIT 1
+  difficulty: simple
+  tags: [单股, 财务, 资产]
+  answerable_on: "2026-06-30"
+
+- question: 格力电器最新净利润率
+  gold_sql: SELECT report_date, net_margin FROM financial_indicator WHERE code='000651' ORDER BY report_date DESC LIMIT 1
+  difficulty: simple
+  tags: [单股, 财务, 指标]
+  answerable_on: "2026-06-30"
+
+- question: 茅台最近一期经营活动现金流净额
+  gold_sql: SELECT report_date, op_cf FROM cashflow_statement WHERE code='600519' ORDER BY report_date DESC LIMIT 1
+  difficulty: simple
+  tags: [单股, 财务, 现金流]
+  answerable_on: "2026-06-30"
+
+# ===== simple: 宏观 =====
+- question: 最近一次公布的 CPI 同比是多少
+  gold_sql: SELECT date, value FROM macro_series WHERE indicator='CPI_YOY' ORDER BY date DESC LIMIT 1
+  difficulty: simple
+  tags: [宏观, 时序]
+  answerable_on: "2026-06-30"
+
+# ===== join: 财务 × 指标 =====
+- question: 茅台最新一期的营收和净资产收益率
+  gold_sql: >
+    SELECT i.report_date, i.revenue, f.roe
+    FROM income_statement i
+    JOIN financial_indicator f ON i.code=f.code AND i.report_date=f.report_date
+    WHERE i.code='600519'
+    ORDER BY i.report_date DESC LIMIT 1
+  difficulty: join
+  tags: [JOIN, 财务, 单股]
+  answerable_on: "2026-06-30"
+
+- question: 比亚迪最新一期营业收入和净资产
+  gold_sql: >
+    SELECT i.report_date, i.revenue, b.total_equity
+    FROM income_statement i
+    JOIN balance_sheet b ON i.code=b.code AND i.report_date=b.report_date
+    WHERE i.code='002594'
+    ORDER BY i.report_date DESC LIMIT 1
+  difficulty: join
+  tags: [JOIN, 财务, 单股]
+  answerable_on: "2026-06-30"
+
+- question: 茅台最新一期营收与经营现金流净额
+  gold_sql: >
+    SELECT i.report_date, i.revenue, c.op_cf
+    FROM income_statement i
+    JOIN cashflow_statement c ON i.code=c.code AND i.report_date=c.report_date
+    WHERE i.code='600519'
+    ORDER BY i.report_date DESC LIMIT 1
+  difficulty: join
+  tags: [JOIN, 财务, 单股]
+  answerable_on: "2026-06-30"
+
+- question: 招商银行最新一期的净利润与净资产收益率
+  gold_sql: >
+    SELECT i.report_date, i.net_profit, f.roe
+    FROM income_statement i
+    JOIN financial_indicator f ON i.code=f.code AND i.report_date=f.report_date
+    WHERE i.code='600036'
+    ORDER BY i.report_date DESC LIMIT 1
+  difficulty: join
+  tags: [JOIN, 财务, 单股]
+  answerable_on: "2026-06-30"
+
+- question: 龙虎榜最新一日上榜股票及其股票名称
+  gold_sql: >
+    SELECT d.code, s.name, d.net_buy
+    FROM dragon_tiger d JOIN stock_basic s ON d.code=s.code
+    WHERE d.date=(SELECT MAX(date) FROM dragon_tiger)
+    ORDER BY d.net_buy DESC LIMIT 10
+  difficulty: join
+  tags: [JOIN, 龙虎榜, 资金面]
+  answerable_on: "2026-06-30"
+
+# ===== aggregate: 时序聚合 / top-k =====
+- question: 茅台连续三年的 ROE 分别是多少
+  gold_sql: SELECT report_date, roe FROM financial_indicator WHERE code='600519' ORDER BY report_date DESC LIMIT 3
+  difficulty: aggregate
+  tags: [时序, top-k, 财务]
+  answerable_on: "2026-06-30"
+
+- question: 评估股里 ROE 最高的前五只股票
+  gold_sql: >
+    SELECT code, MAX(roe) AS max_roe
+    FROM financial_indicator
+    WHERE roe IS NOT NULL
+    GROUP BY code ORDER BY max_roe DESC LIMIT 5
+  difficulty: aggregate
+  tags: [全市场, top-k, 聚合]
+  answerable_on: "2026-06-30"
+
+- question: 茅台近三期累计净利润
+  gold_sql: >
+    SELECT SUM(net_profit) AS sum_net_profit
+    FROM (
+      SELECT net_profit FROM income_statement
+      WHERE code='600519' ORDER BY report_date DESC LIMIT 3
+    )
+  difficulty: aggregate
+  tags: [时序, 聚合, 单股]
+  answerable_on: "2026-06-30"
+
+- question: 最新一期报告期里营收最高的前十只股票
+  gold_sql: >
+    SELECT code, revenue
+    FROM income_statement
+    WHERE report_date=(SELECT MAX(report_date) FROM income_statement)
+    ORDER BY revenue DESC LIMIT 10
+  difficulty: aggregate
+  tags: [全市场, top-k, 财务]
+  answerable_on: "2026-06-30"
+
+- question: 最近12个月CPI同比平均值
+  gold_sql: >
+    SELECT AVG(value) AS avg_cpi
+    FROM (
+      SELECT value FROM macro_series
+      WHERE indicator='CPI_YOY' ORDER BY date DESC LIMIT 12
+    )
+  difficulty: aggregate
+  tags: [宏观, 聚合, 时序]
+  answerable_on: "2026-06-30"
+
+# ===== domain: 融资融券 / 板块 / 龙虎榜 / 业绩快报 =====
+- question: 最近一周融资余额变化
+  gold_sql: SELECT date, rzye FROM margin_daily ORDER BY date DESC LIMIT 5
+  difficulty: domain
+  tags: [资金面, 时序, 融资融券]
+  answerable_on: "2026-06-30"
+
+- question: 最近一日龙虎榜净买入额最高的股票
+  gold_sql: >
+    SELECT code, SUM(net_buy) AS total_net_buy
+    FROM dragon_tiger
+    WHERE date=(SELECT MAX(date) FROM dragon_tiger)
+    GROUP BY code ORDER BY total_net_buy DESC LIMIT 1
+  difficulty: domain
+  tags: [龙虎榜, 资金面, top-k]
+  answerable_on: "2026-06-30"
+
+- question: 行业板块最新一日涨幅前五
+  gold_sql: >
+    SELECT board_name, pct_chg
+    FROM industry_board_daily
+    WHERE date=(SELECT MAX(date) FROM industry_board_daily)
+    ORDER BY pct_chg DESC LIMIT 5
+  difficulty: domain
+  tags: [板块, top-k, 时序]
+  answerable_on: "2026-06-30"
+
+- question: 最新一期业绩快报里净利润同比增长超过100%的个股数
+  gold_sql: >
+    SELECT COUNT(*) AS cnt
+    FROM performance_express
+    WHERE net_profit_yoy > 100
+      AND report_date=(SELECT MAX(report_date) FROM performance_express)
+  difficulty: domain
+  tags: [业绩快报, 聚合]
+  answerable_on: "2026-06-30"
+
+# ===== out_of_scope 陷阱题(范围门增益 ablation 用;gold_sql=null) =====
+- question: 帮我写一段 Python 排序代码
+  gold_sql: null
+  difficulty: simple
+  tags: [out_of_scope, 代码]
+  answerable_on: "2026-06-30"
+
+- question: 茅台明天会涨吗
+  gold_sql: null
+  difficulty: simple
+  tags: [out_of_scope, 预测]
+  answerable_on: "2026-06-30"
+
+- question: 今天天气怎么样
+  gold_sql: null
+  difficulty: simple
+  tags: [out_of_scope, 闲聊]
+  answerable_on: "2026-06-30"
+
+- question: 推荐一家上海好吃的餐厅
+  gold_sql: null
+  difficulty: simple
+  tags: [out_of_scope, 闲聊]
+  answerable_on: "2026-06-30"

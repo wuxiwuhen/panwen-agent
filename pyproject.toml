@@ -8,6 +8,7 @@ dependencies = [
   "pandas>=2.2.0",
   "sqlglot>=23.0.0",       # Plan 2 用,提前装好
   "openai>=1.0.0",
+  "pyyaml>=6.0",           # Task 4: eval loader 顶层 import yaml, 硬运行时依赖
 ]
 
 [project.optional-dependencies]
