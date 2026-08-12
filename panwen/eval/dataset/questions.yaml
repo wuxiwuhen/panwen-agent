@@ -22,8 +22,8 @@
   tags: [单股, 财务, 指标]
   answerable_on: "2026-06-30"
 
-- question: 比亚迪近三年的毛利率走势
-  gold_sql: SELECT report_date, gross_margin FROM financial_indicator WHERE code='002594' ORDER BY report_date DESC LIMIT 12
+- question: 比亚迪近三年的净资产收益率走势
+  gold_sql: SELECT report_date, roe FROM financial_indicator WHERE code='002594' ORDER BY report_date DESC LIMIT 12
   difficulty: simple
   tags: [单股, 财务, 时序]
   answerable_on: "2026-06-30"
@@ -174,14 +174,14 @@
   tags: [龙虎榜, 资金面, top-k]
   answerable_on: "2026-06-30"
 
-- question: 行业板块最新一日涨幅前五
+- question: 行业板块最新一日成交额前五
   gold_sql: >
-    SELECT board_name, pct_chg
+    SELECT board_name, amount
     FROM industry_board_daily
     WHERE date=(SELECT MAX(date) FROM industry_board_daily)
-    ORDER BY pct_chg DESC LIMIT 5
+    ORDER BY amount DESC LIMIT 5
   difficulty: domain
-  tags: [板块, top-k, 时序]
+  tags: [板块, top-k, 资金面]
   answerable_on: "2026-06-30"
 
 - question: 最新一期业绩快报里净利润同比增长超过100%的个股数
