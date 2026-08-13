@@ -3,7 +3,6 @@
 意图分类折叠进同一次 LLM 调用(零额外成本)。
 """
 from __future__ import annotations
-import json
 import re
 from pathlib import Path
 
@@ -66,15 +65,32 @@ def _parse_topk(q: str) -> tuple[int | None, str | None]:
 
 
 # --- LLM 层 ---
+_NORM_TOOL = {
+    "name": "emit_norm",
+    "description": "输出对用户问题的结构化理解",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "intent": {"type": "string", "enum": ["sql_answerable", "needs_clarify", "out_of_scope"]},
+            "entities": {"type": "object"},
+            "date_range": {"type": ["array", "null"], "items": {"type": "string"}},
+            "top_k": {"type": ["integer", "null"]},
+            "order": {"type": ["string", "null"], "enum": ["asc", "desc", None]},
+            "question": {"type": "string"},
+        },
+        "required": ["intent", "entities", "question"],
+    },
+}
+
+
 def _llm_understand(question: str, backend: AgentBackend) -> dict:
     from panwen.agent.types import Message
     resp = backend.chat(
         [Message(role="system", content=_PROMPT), Message(role="user", content=question)],
-        temperature=0.0, response_format={"type": "json_object"})
-    try:
-        return json.loads(resp.content)
-    except json.JSONDecodeError:
-        return {"intent": "needs_clarify", "entities": {}}  # 解析失败 → 安全降级为澄清
+        tools=[_NORM_TOOL], tool_choice={"type": "tool", "name": "emit_norm"}, temperature=0.0)
+    if resp.tool_calls:
+        return resp.tool_calls[0]["input"]
+    return {"intent": "needs_clarify", "entities": {}}   # 无 tool_use → 安全降级
 
 
 def normalize(question: str, backend: AgentBackend) -> NormQuery:

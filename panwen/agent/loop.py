@@ -3,7 +3,6 @@
 每阶段受 config 开关控制；失败不中断，记 trace。
 """
 from __future__ import annotations
-import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
@@ -41,11 +40,25 @@ def _execute_sql(sql: str, conn, timeout_s: int) -> tuple[list[dict] | None, str
         return None, f"ROOT_EXEC:{type(e).__name__}:{e}"
 
 
+def _sql_tool(use_plan: bool) -> dict:
+    """emit_sql 工具定义；use_plan 控制是否含 plan 字段。"""
+    props = {"sql": {"type": "string"}}
+    if use_plan:
+        props["plan"] = {"type": "string"}
+    return {
+        "name": "emit_sql",
+        "description": "输出一条只读 SQL 查询(覆盖 plan_generate 指令)",
+        "input_schema": {"type": "object", "properties": props, "required": ["sql"]},
+    }
+
+
 def _generate(norm: NormQuery, schema_subset, fewshot, backend: AgentBackend,
-              feedback: str | None, prev_sql: str | None) -> tuple[str | None, str | None]:
+              feedback: str | None, prev_sql: str | None,
+              use_plan: bool = True) -> tuple[str | None, str | None]:
     """⑤ 一次 LLM 调用出 (sql, plan)。feedback 非空 = 自纠错回灌错误。
 
-    Directive 3: 弃用 brief 里未使用的 conn/config 形参。
+    强制 tool_use(emit_sql)；无 tool_use → (None, None)。
+    Directive 3: 弃用 brief 里未使用的 conn/config 形参；use_plan 从 config 传入。
     """
     schema_text = "\n".join(f"- {e.table}{'.'+e.column if e.column else ''}: {e.doc}" for e in schema_subset)
     fewshot_text = "\n".join(f"Q: {e.question}\nSQL: {e.sql}" for e in fewshot) if fewshot else "(无)"
@@ -55,12 +68,12 @@ def _generate(norm: NormQuery, schema_subset, fewshot, backend: AgentBackend,
         user += f"\n\n上一条 SQL 失败，错误反馈:\n{feedback}\n上次SQL:\n{prev_sql}\n请修正。"
     resp = backend.chat(
         [Message(role="system", content=_PLAN_GEN_PROMPT), Message(role="user", content=user)],
-        temperature=0.0, response_format={"type": "json_object"})
-    try:
-        d = json.loads(resp.content)
-        return d.get("sql"), d.get("plan")
-    except json.JSONDecodeError:
-        return None, None
+        tools=[_sql_tool(use_plan)], tool_choice={"type": "tool", "name": "emit_sql"},
+        temperature=0.0)
+    if resp.tool_calls:
+        inp = resp.tool_calls[0]["input"]
+        return inp.get("sql"), inp.get("plan")
+    return None, None
 
 
 def run_query(question: str, conn, backend: AgentBackend, rag: SchemaRetriever,
@@ -93,7 +106,8 @@ def run_query(question: str, conn, backend: AgentBackend, rag: SchemaRetriever,
 
     for attempt in range(budget):
         # ⑤ generate
-        sql, _plan = _generate(norm, schema_subset, shots, backend, feedback, prev_sql)
+        sql, _plan = _generate(norm, schema_subset, shots, backend, feedback, prev_sql,
+                                use_plan=config.use_plan)
         trace.append(TraceStep("generate", sql is not None, f"attempt={attempt} sql={'有' if sql else '无'}"))
         if not sql:
             break
