@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 data/live.duckdb
 data/checkpoint.json
+data/.crawl_progress.json
+data/*.log
 .pytest_cache/
 .superpowers/
 data/rag_cache/
