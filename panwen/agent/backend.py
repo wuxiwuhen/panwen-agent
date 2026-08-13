@@ -57,8 +57,11 @@ class AnthropicBackend:
         sys_text = system
         msgs = []
         for m in messages:
-            if m.role == "system" and sys_text is None:
-                sys_text = m.content or ""
+            if m.role == "system":
+                if sys_text is None:
+                    sys_text = m.content or ""
+                # else: 显式 system= kwarg 优先; 从 msgs 中丢弃 system 消息
+                # (Anthropic Messages API 拒绝 messages 内的 role=system, 400)
             else:
                 msgs.append({"role": m.role, "content": _to_content_blocks(m)})
         kw = dict(model=model or self.model, messages=msgs, temperature=temperature)

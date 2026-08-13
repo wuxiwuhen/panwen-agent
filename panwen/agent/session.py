@@ -44,5 +44,8 @@ def _window(session: Session, keep_turns: int) -> None:
             turns.append(cur); cur = []    # 真实新问题 → 切轮
         cur.append(m)
     if cur: turns.append(cur)
+    if keep_turns == 0:                     # turns[-0:]==turns[0:]==全部; 显式短路仅留 system
+        session.messages = system
+        return
     kept = turns[-keep_turns:] if keep_turns >= 0 else turns
     session.messages = system + [m for t in kept for m in t]

@@ -43,4 +43,4 @@ def test_timeout_returns_promptly():
     elapsed = time.perf_counter() - t0
     assert r.ok is False
     assert r.rootCause == "ROOT_TIMEOUT"
-    assert elapsed < 5.0          # 调用方迅速返回（远小于完整查询耗时），证明 shutdown(wait=False)
+    assert elapsed < 2.0          # 固定路径 shutdown(wait=False) ~1.0s; 回退路径(wait=True)~2.2s 应被抓住

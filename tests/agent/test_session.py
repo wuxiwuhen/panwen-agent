@@ -52,3 +52,15 @@ def test_window_keeps_tool_results_with_their_assistant():
                   if isinstance(b, dict) and b.get("type") == "tool_result"}
     # 不变式: 窗口内每个 tool_result 必须有其匹配的 tool_use 也在窗口内(无孤儿)
     assert result_ids <= use_ids
+
+
+def test_window_keep_zero_keeps_only_system():
+    # 回归: turns[-0:]==turns[0:]==全部 → keep_turns=0 旧实现会保留全部轮次。
+    # 正确语义: keep_turns=0 仅保留 system 消息, 丢弃所有会话轮次。
+    sess = Session(sid="s", messages=[Message("system", "S")], created_at="t")
+    for i in range(3):
+        sess.messages.append(Message("user", f"u{i}"))
+        sess.messages.append(Message("assistant", f"a{i}"))
+    _window(sess, keep_turns=0)
+    assert len(sess.messages) == 1
+    assert sess.messages[0].role == "system"
