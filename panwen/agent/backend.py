@@ -1,67 +1,89 @@
-"""AgentBackend —— OpenAI 兼容后端(DeepSeek + GLM 同接口)。
+"""AgentBackend —— Anthropic SDK 原生后端(DeepSeek + GLM 均提供 anthropic 兼容端点)。
 
-复用 ggb-fable 的「Backend 注入」：chat() 接受 list[Message]，返回 ChatResult。
-不实现自主工具循环(那是 loop.py 的职责)。
+chat() 接受 list[Message]，返回 ChatResult。不实现自主工具循环(那是 loop.py 的职责)。
 """
 from __future__ import annotations
 import os
 from typing import Protocol
-from openai import OpenAI
+from anthropic import Anthropic
 
 from panwen.agent.types import Message, ChatResult
 
-# provider → (env var, base_url, model)
+# provider → (env var, base_url, model, auth_mode)
 _PROVIDERS = {
-    "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com", "deepseek-chat"),
-    "glm":      ("GLM_API_KEY", "https://open.bigmodel.cn/api/paas/v4", "glm-4.6"),
+    "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com/anthropic", "deepseek-chat", "auth_token"),
+    "glm":      ("GLM_API_KEY", "https://api.z.ai/api/anthropic", "glm-4.6", "auth_token"),
 }
 
 
-class BackendConfigError(RuntimeError):
-    pass
+class BackendConfigError(RuntimeError): ...
 
 
 class AgentBackend(Protocol):
-    def chat(self, messages: list[Message], *, tools: list | None = None,
-             temperature: float = 0.0, response_format: dict | None = None,
-             model: str | None = None) -> ChatResult: ...
+    def chat(self, messages, *, tools=None, tool_choice=None, temperature=0.0,
+             system=None, model=None) -> ChatResult: ...
 
 
-class OpenAICompatBackend:
-    """DeepSeek 与 GLM 均兼容 OpenAI Chat Completions API，一个类覆盖。"""
+def _to_content_blocks(msg: Message) -> list[dict]:
+    if isinstance(msg.content, list):
+        return msg.content
+    if msg.content is None:
+        return []
+    return [{"type": "text", "text": msg.content}]
 
-    def __init__(self, api_key: str, base_url: str, model: str):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.base_url = base_url
+
+def _bget(b, name, default=None):
+    """Read a field off a content block that may be a dict (mock) or a pydantic
+    block object (real anthropic SDK). Robust to both so the same code path
+    serves tests and live responses."""
+    if isinstance(b, dict):
+        return b.get(name, default)
+    return getattr(b, name, default)
+
+
+class AnthropicBackend:
+    """DeepSeek 与 GLM 均暴露 Anthropic Messages 兼容端点，直接用 anthropic SDK。"""
+
+    def __init__(self, api_key, base_url, model, auth_mode="api_key"):
+        # auth_mode: "api_key"→x-api-key(anthropic原生); "auth_token"→Authorization Bearer(z.ai/DeepSeek)
+        if auth_mode == "auth_token":
+            self.client = Anthropic(base_url=base_url, auth_token=api_key)
+        else:
+            self.client = Anthropic(base_url=base_url, api_key=api_key)
         self.model = model
 
-    def chat(self, messages: list[Message], *, tools: list | None = None,
-             temperature: float = 0.0, response_format: dict | None = None,
-             model: str | None = None) -> ChatResult:
-        payload = {
-            "model": model or self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
-            "temperature": temperature,
-        }
-        if response_format is not None:
-            payload["response_format"] = response_format
-        if tools is not None:
-            payload["tools"] = tools
-        resp = self.client.chat.completions.create(**payload)
-        msg = resp.choices[0].message
-        return ChatResult(
-            content=msg.content or "",
-            tool_calls=getattr(msg, "tool_calls", None) or [],
-            raw=getattr(resp, "model_dump", lambda: {})(),
-        )
+    def chat(self, messages, *, tools=None, tool_choice=None, temperature=0.0,
+             system=None, model=None) -> ChatResult:
+        sys_text = system
+        msgs = []
+        for m in messages:
+            if m.role == "system" and sys_text is None:
+                sys_text = m.content or ""
+            else:
+                msgs.append({"role": m.role, "content": _to_content_blocks(m)})
+        kw = dict(model=model or self.model, messages=msgs, temperature=temperature)
+        if sys_text: kw["system"] = sys_text
+        if tools: kw["tools"] = tools
+        if tool_choice: kw["tool_choice"] = tool_choice
+        resp = self.client.messages.create(**kw)
+        blocks = list(resp.content)
+        text = "".join(_bget(b, "text", "") for b in blocks if _bget(b, "type") == "text")
+        tool_calls = [{"id": _bget(b, "id"), "name": _bget(b, "name"), "input": _bget(b, "input")}
+                      for b in blocks if _bget(b, "type") == "tool_use"]
+        return ChatResult(content=text, tool_calls=tool_calls, content_blocks=[
+            {"type": _bget(b, "type"), **({"text": _bget(b, "text")} if _bget(b, "type") == "text" else
+             {"id": _bget(b, "id"), "name": _bget(b, "name"), "input": _bget(b, "input")})}
+            for b in blocks],
+            stop_reason=getattr(resp, "stop_reason", None),
+            raw=getattr(resp, "model_dump", lambda: {})())
 
 
-def make_backend(provider: str = "deepseek") -> AgentBackend:
+def make_backend(provider="deepseek") -> AgentBackend:
     """从环境变量读 key(trial 模式)。"""
     if provider not in _PROVIDERS:
         raise BackendConfigError(f"unknown provider: {provider}")
-    env_var, base_url, model = _PROVIDERS[provider]
+    env_var, base_url, model, auth_mode = _PROVIDERS[provider]
     api_key = os.getenv(env_var)
     if not api_key:
         raise BackendConfigError(f"missing env {env_var} for provider '{provider}'")
-    return OpenAICompatBackend(api_key=api_key, base_url=base_url, model=model)
+    return AnthropicBackend(api_key=api_key, base_url=base_url, model=model, auth_mode=auth_mode)
