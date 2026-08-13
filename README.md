@@ -33,6 +33,29 @@ make eval                     # 首次会下载 bge-large-zh-v1.5（~1.3GB）
 
 ---
 
+## Demo UI（Plan 3）
+
+交互式 Gradio Web UI：输入中文问句 → 展示 SQL + 结果表 + 解释（置信度/假设）+ 9 步推理 trace，并暴露 `AgentConfig` 开关（Few-shot / ValidSQL / 自纠错 / schema top_k）现场对比。
+
+**本地运行：**
+
+```bash
+pip install gradio
+python app.py
+# 连实时库（可选）：export PANWEN_DB=data/live.duckdb
+```
+
+**部署到 Hugging Face Spaces（公开可点链接）：**
+
+1. 新建 Space（SDK: Gradio，CPU basic）。
+2. 在 Space Settings → Secrets 设 `DEEPSEEK_API_KEY`（或 `GLM_API_KEY`）。
+3. push 本仓库到 Space repo（`data/eval.duckdb` 22MB 随仓提交；`live.duckdb` gitignored 不推送）。
+4. Space 跑根 `app.py`，按 `requirements.txt` 装依赖（**不含 akshare**，查询路径不依赖它），从仓库根 cwd 导入 `panwen`。首次提问下载 bge-large-zh（~1.3GB），UI 显示"模型加载中…"。
+
+**诚实口径：** Demo 跑在冻结 `eval.duckdb`（as-of 2026-06-30 快照）；ValidSQL check 5 为 MVP 顾问式（非阻断）；不预填准确率（须 `make eval` 实测）。
+
+---
+
 ## 数据层（akshare → DuckDB）
 
 盘问的数据来自 [akshare](https://akshare.akfamily.xyz)（MIT，免费无 token）。仓库**只发入库脚本不发数据**。
