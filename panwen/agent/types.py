@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class Message:
     role: str                       # "system" | "user" | "assistant"
-    content: str | None = None
+    content: str | list[dict] | None = None
     tool_calls: list | None = None
 
 
@@ -14,7 +14,9 @@ class Message:
 class ChatResult:
     content: str                    # LLM 原始文本(可能含 JSON)
     tool_calls: list
-    raw: dict                       # 透传 provider 原始响应片段
+    content_blocks: list = field(default_factory=list)   # 原始 anthropic content 块, 回填多轮历史用
+    stop_reason: str | None = None                       # "tool_use" | "end_turn" | ...
+    raw: dict = field(default_factory=dict)              # 透传 provider 原始响应片段
 
 
 @dataclass

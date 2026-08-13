@@ -18,7 +18,7 @@ def test_requirements_has_gradio_not_akshare():
 
 def test_requirements_has_runtime_deps():
     text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    for dep in ["duckdb", "pandas", "sqlglot", "openai", "pyyaml", "sentence-transformers"]:
+    for dep in ["duckdb", "pandas", "sqlglot", "anthropic", "pyyaml", "sentence-transformers"]:
         assert dep in text
 
 

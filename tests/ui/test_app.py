@@ -53,3 +53,18 @@ def test_build_app_returns_blocks():
     gr = pytest.importorskip("gradio")
     demo = app.build_app()
     assert isinstance(demo, gr.Blocks)
+
+
+# --- Task 9: render AgentRun → 多表 markdown ---
+from panwen.ui.render import render_agent_run  # noqa: E402
+from panwen.agent.agent_loop import AgentRun  # noqa: E402
+from panwen.agent.tools.types import TableResult, Source  # noqa: E402
+
+
+def test_render_agent_run_multi_tables():
+    ar = AgentRun(synthesis="茅台概览如下。",
+                  tables=[TableResult("基本信息", [{"name": "茅台"}], Source("duckdb", "stock_basic")),
+                          TableResult("最新财务", [{"revenue": 1e9}], Source("duckdb", "income_statement"))],
+                  sources=[Source("duckdb", "stock_basic")])
+    md = render_agent_run(ar)
+    assert "基本信息" in md and "最新财务" in md and "茅台概览" in md

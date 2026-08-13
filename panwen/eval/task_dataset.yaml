@@ -1,0 +1,29 @@
+# Task 10 外层（任务级 / agent loop）评测集(spec §8.3)。
+# 与内层 gold-SQL exec-acc 评测集(dataset/questions.yaml)共存、互不依赖：
+#   - 内层度量 query_database 执行准确率(已冻结，勿改)。
+#   - 外层度量 agent loop 编排是否覆盖宽意图的多个切面(facet recall)，
+#     以及客观产出量(表数 table_count / 溯源数 source_count)。
+# 切面词汇(TOOL_FACET key)与窄 tool 名去掉 get_ 前缀一一对应：
+#     stock_profile / financials / recent_quotes / performance
+# (query_database 命中记为 "sql"，不计入上述窄切面词汇)。
+# 判定(人工 or LLM-judge，spec §15#2)暂缓——本文件只给期望切面。
+
+- id: all_info_sunway
+  question: "我想知道信维通信(300136)的所有信息"
+  expected_facets: [stock_profile, financials, recent_quotes, performance]
+
+- id: profile_plus_quotes
+  question: "宁德时代(300750)这只股票是做什么的，最近一个月行情怎么样"
+  expected_facets: [stock_profile, recent_quotes]
+
+- id: financials_and_perf
+  question: "比亚迪(002594)最新的财务报表和业绩快报情况如何"
+  expected_facets: [financials, performance]
+
+- id: full_picture_moutai
+  question: "贵州茅台(600519)的公司概况、最新财报、近期走势和业绩快报都给我看看"
+  expected_facets: [stock_profile, financials, recent_quotes, performance]
+
+- id: compare_roe
+  question: "对比京东方A(000725)和澄星股份(600078)的最新ROE"
+  expected_facets: [financials]

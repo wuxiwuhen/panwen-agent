@@ -7,7 +7,9 @@ from dataclasses import dataclass
 
 from panwen.agent.backend import AgentBackend, make_backend
 from panwen.agent.config import AgentConfig
+from panwen.agent.agent_loop import run_agent, AgentRun
 from panwen.agent.loop import run_query
+from panwen.agent.session import SessionStore
 from panwen.agent.types import AgentResult
 from panwen.data import db
 from panwen.rag.embed import BgeEmbedder, Embedder
@@ -41,6 +43,10 @@ def build_runtime(db_path: str | None = None, provider: str = "deepseek",
 
 _RUNTIME: Runtime | None = None
 
+# 多轮会话存储（模块级单例）。run_agent 在多轮间累积上下文；
+# reset_runtime 会一并清空，保证测试隔离。
+_STORE: SessionStore = SessionStore()
+
 
 def get_runtime(db_path: str | None = None, provider: str = "deepseek",
                 embedder: Embedder | None = None) -> Runtime:
@@ -52,12 +58,23 @@ def get_runtime(db_path: str | None = None, provider: str = "deepseek",
 
 
 def reset_runtime() -> None:
-    """测试用：清空单例。"""
-    global _RUNTIME
+    """测试用：清空 Runtime 单例与会话存储。"""
+    global _RUNTIME, _STORE
     _RUNTIME = None
+    _STORE = SessionStore()
 
 
 def ask(question: str, config: AgentConfig, runtime: Runtime | None = None) -> AgentResult:
-    """运行一次查询。runtime 为 None 时取懒单例（首次触发 bge 加载）。"""
+    """run_query 单查入口（toggle 用）。runtime 为 None 时取懒单例。"""
     rt = runtime if runtime is not None else get_runtime()
     return run_query(question, rt.conn, rt.backend, rt.rag, rt.fewshot, config)
+
+
+def ask_agent(question: str, session_id: str, config: AgentConfig,
+              runtime: Runtime | None = None) -> AgentRun:
+    """run_agent 多轮入口：透传 session_id + 模块级 _STORE 维系多轮上下文。
+    runtime 为 None 时取懒单例（首次触发 bge 加载）。
+    """
+    rt = runtime if runtime is not None else get_runtime()
+    return run_agent(question, session_id, rt.conn, rt.backend, rt.rag, rt.fewshot,
+                     config, _STORE)
