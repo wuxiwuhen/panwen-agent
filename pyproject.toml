@@ -7,10 +7,16 @@ dependencies = [
   "duckdb>=1.1.0",
   "pandas>=2.2.0",
   "sqlglot>=23.0.0",       # Plan 2 用,提前装好
+  "openai>=1.0.0",
+  "pyyaml>=6.0",           # Task 4: eval loader 顶层 import yaml, 硬运行时依赖
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "pytest-mock>=3.12.0"]
+rag = ["sentence-transformers>=2.7.0"]
+
+[tool.setuptools.packages.find]
+include = ["panwen*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

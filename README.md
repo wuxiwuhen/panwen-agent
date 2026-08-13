@@ -2,7 +2,34 @@
 
 > 用中文问盘：A 股自然语言查询 Agent
 
-**状态 / Status:** Phase 1 数据层（Data layer）。本仓库当前只包含数据采集与建模层（akshare → DuckDB），并已在真实 akshare 数据上端到端验证（行情/财务/财务指标/融资融券/龙虎榜/宏观/业绩快报等 🟢🟡 域跑通回填）；Agent 问答核心、ValidSQL 约束、RAG 与冻结评测（Eval）尚未实现，计划在 Plan 2/3 推进。请勿将其当作一个可用的端到端 Agent。
+**状态 / Status:** Phase 1 数据层 + Phase 2 Agent 核心（Agent Core）。数据层（akshare → DuckDB）已在真实数据上端到端验证；Agent 核心层（9 步确定性管线 + ValidSQL + 双路 RAG + 有界自纠错 + 冻结评测集）已实现并通过 99 项单元/集成测试（pytest 全绿）。**端到端问答需自备 LLM API key 跑 `make eval` 实测指标**（指标为自建冻结集实测，非跨域基准，详见下文「诚实口径」）。
+
+---
+
+## Agent 核心层（Plan 2）
+
+在数据层之上构建了端到端中文 Text-to-SQL Agent：
+
+- **9 步确定性管线**：① normalize（规则+LLM 混合，含意图/范围门）→ ② dispatch（确定性三分支：out_of_scope 拒答 / needs_clarify 澄清 / sql_answerable 继续）→ ③④ 双路 RAG 上下文 → ⑤ plan+generate（单次 LLM 调用）→ ⑥ ValidSQL 校验 → ⑦ 只读执行（超时保护）→ ⑧ 有界自纠错（N=3）→ ⑨ 解释。
+- **ValidSQL（sqlglot AST 6 项）**：只写白名单 / 表列存在 / 类型约束（文本列禁聚合）/ 防笛卡尔 / 参数化 / 执行超时。**诚实口径：6 项检查全部运行；其中「参数化」检查（check 5）在 MVP 为顾问式（记入 trace 但不触发自纠错），因为自建评测集的 gold SQL 用裸字面量（如 `code='600519'`）；生产硬化将通过参数化执行（DuckDB 命名参数 + `?` 绑定）将其提升为阻断式。**
+- **双路 RAG**：schema_retriever（常开，控 token、降列幻觉）+ fewshot_store（可 toggle），均用 `BAAI/bge-large-zh-v1.5`（本地、离线、免费），预计算缓存到 `data/rag_cache/`（gitignore）。
+- **LLM 后端**：OpenAI 兼容（DeepSeek-V3 主 / GLM-4.6 备），`AgentBackend` 抽象注入。
+- **冻结评测集**：starter 25 题（21 含 gold_sql + 4 out_of_scope 陷阱），跨 4 难度层；gold SQL 全部在冻结 `eval.duckdb`（as-of 2026-06-30）上可执且返回非空值。执行准确率（主）+ F1 软评分 + 逐组件 ablation（baseline → +Few-shot → +ValidSQL → +自纠错）。
+
+### 跑评测 / Run eval
+
+```bash
+pip install -e ".[dev,rag]"   # 拉取 torch + sentence-transformers
+export DEEPSEEK_API_KEY=...   # 或 GLM_API_KEY
+make eval                     # 首次会下载 bge-large-zh-v1.5（~1.3GB）
+```
+
+### 诚实口径 / Honest claims
+
+- **指标全部实测，绝不编造。** 上述能力已通过 99 项单元/集成测试验证（管线分支、ValidSQL 各检查、RAG 召回、自纠错预算、评分边界）。**端到端执行准确率 / ablation 百分比须由你在本地 `make eval` 实测**——本仓库不预填任何准确率数字。
+- 跨域基准（如 Hermes 54%→93%、GRPO 87.3%）是**他人成果**，仅作对比参照，绝不冒认为本项目指标。
+- ValidSQL check 5（参数化）当前为顾问式（见上），不声称其在 MVP 阻断。
+- 交互式 Demo UI（Gradio/Streamlit）为独立后续计划，不在 Plan 2 内。
 
 ---
 

@@ -5,3 +5,4 @@ data/live.duckdb
 data/checkpoint.json
 .pytest_cache/
 .superpowers/
+data/rag_cache/
