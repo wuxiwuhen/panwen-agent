@@ -24,3 +24,25 @@ def test_tracestep_defaults():
 def test_chatresult_holds_raw():
     cr = T.ChatResult(content='{"sql":"SELECT 1"}', tool_calls=[], raw={"x": 1})
     assert cr.raw["x"] == 1
+
+
+# --- Task 1: Message/ChatResult 演进（向后兼容） ---
+from panwen.agent.types import Message, ChatResult
+
+
+def test_message_accepts_block_list():
+    m = Message(role="assistant", content=[{"type": "text", "text": "hi"}])
+    assert isinstance(m.content, list)
+
+
+def test_chatresult_new_fields_default():
+    # 旧式构造（无新字段）必须仍可用 —— 保护 _ScriptedBackend 等现有 mock
+    r = ChatResult(content="x", tool_calls=[], raw={})
+    assert r.content_blocks == []
+    assert r.stop_reason is None
+
+
+def test_chatresult_carries_blocks():
+    r = ChatResult(content="x", tool_calls=[{"id": "1", "name": "f", "input": {}}],
+                   content_blocks=[{"type": "tool_use", "id": "1"}], stop_reason="tool_use")
+    assert r.content_blocks and r.stop_reason == "tool_use"
