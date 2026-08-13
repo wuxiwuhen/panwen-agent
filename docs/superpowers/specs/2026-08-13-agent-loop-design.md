@@ -29,6 +29,7 @@ Plan 4 不重写管线，而是**在管线上方加一层 agentic 编排**：age
 | 与 Plan 2 的关系 | **共存不替代**：agent loop 把 Plan 2 管线包成 `query_database` tool。管线的逐组件 ablation 纯度**不破坏**（§4 调和 §3 张力） |
 | eval 口径 | **两层不混淆**：内层复用冻结集（gold-SQL 执行准确率 + ablation，在新后端重测）；外层新增小规模**任务级**评测（编排成功，非执行准确率） |
 | 可溯源 | **Phase 1 钉死 tool 结果的 `source` 契约**；Phase 2 加 web/RSSHub tool 时同契约，溯源自然延续 |
+| 会话历史 | **Phase 1 做简单版多轮会话**（内存 `SessionStore` + 整轮窗口裁剪，§8.4）；增强（摘要/持久化/跨会话）推迟 |
 | Phase 范围 | 见 §11（交付 / 推迟） |
 
 ---
@@ -194,6 +195,7 @@ class Message:
 class ChatResult:
     content: str                           # 拼接后的 text
     tool_calls: list                       # 归一化的 [{id,name,input}]
+    content_blocks: list                   # 原始 anthropic content 块(text/tool_use)，回填多轮历史用
     stop_reason: str | None = None         # "tool_use" | "end_turn" | ...
     raw: dict = field(default_factory=dict)
 ```
@@ -218,22 +220,25 @@ class ChatResult:
 ### 8.1 主循环
 
 ```python
-def run_agent(question: str, conn, backend, rag, fewshot, config) -> AgentRun:
+def run_agent(question: str, session_id: str, conn, backend, rag, fewshot, config,
+              store: SessionStore) -> AgentRun:
     tools = build_tools(conn, backend, rag, fewshot, config)   # 窄 tool + query_database
     schemas = [t.schema for t in tools]                         # 给 LLM 的 JSON schema
-    messages = [Message("user", question)]
+    session = store.get_or_create(session_id)                   # 带历史的多轮(§8.4)
+    session.append(Message("user", question))                   # 追加本轮用户输入
+    _window(session, config.session_history_turns)              # 简单整轮窗口裁剪
     turns = 0
     while turns < config.agent_max_turns:
-        resp = backend.chat(messages, tools=schemas, system=SYSTEM_PROMPT,
+        resp = backend.chat(session.messages, tools=schemas, system=SYSTEM_PROMPT,
                             tool_choice=None, temperature=0.0)
-        messages.append(Message("assistant", resp.raw_content_blocks, tool_calls=resp.tool_calls))
+        session.append(Message("assistant", resp.content_blocks, tool_calls=resp.tool_calls))
         if not resp.tool_calls:                                 # 终止 → 最终综合
             break
         for tc in resp.tool_calls:
             result = dispatch(tc.name, tc.input, tools)         # 执行 tool
-            messages.append(Message("user", [tool_result_block(tc.id, result)]))
+            session.append(Message("user", [tool_result_block(tc.id, result)]))
         turns += 1
-    return AgentRun.from_turns(question, messages, turns)
+    return AgentRun.from_turns(question, session, turns)
 ```
 
 - `config.agent_max_turns`（新增，默认 6）兜底，防死循环。
@@ -267,9 +272,23 @@ class AgentRun:
     turns: int
 ```
 
+### 8.4 会话历史（简单版，Phase 1）
+
+当前系统单次问答、无记忆。Phase 1 加**最简多轮会话**：
+
+- `SessionStore`（**内存版**，Phase 1；Phase 2 可换持久化）：按 `session_id` 存 `Session.messages`（含 system + 全部历史轮）。
+- `run_agent` 取/建 session → 追加本轮 user → **基于历史 messages 跑 tool-use loop**（agent 记得之前查过什么）。
+- **上下文管理（简单整轮窗口）**：`config.session_history_turns`（默认 6）裁掉最旧的**整轮**（一轮 = 一条 user + assistant 完整响应，含其 tool_use/tool_result 子序列 + 最终 synthesis），**保留 system**。整轮裁剪避免 tool_use/tool_result 孤儿。无摘要、无压缩（Phase 2 再优化）。
+- system prompt 在 session 创建时种子一次。
+- **UI**：Gradio chatbot 组件（§10），session_id 绑定聊天会话。
+
+> 简单 = 内存存储 + 整轮窗口，不做摘要/向量记忆/跨会话。体验出问题（上下文丢失 / token 爆）再优化。
+
 ---
 
 ## 9. 评测（两层、不混淆、诚实）
+
+内层（单题 SQL 质量）与外层（多面编排）是**两个并存维度**，各有入口、互不替代、不混淆。
 
 ### 9.1 内层（`query_database` / `run_query`）—— 复用冻结集
 
@@ -290,12 +309,13 @@ class AgentRun:
 
 ---
 
-## 10. Demo UI 演进（AgentResult → AgentRun）
+## 10. Demo UI 演进（AgentResult → AgentRun + 多轮会话）
 
 - 现有 `ui/render.py` 渲染单 `AgentResult`。新增渲染 `AgentRun`：`synthesis`（主答复）+ 多个 `TableResult`（分节表）+ `sources`（溯源脚注）。
-- 入口 `app.py` 增加「agent 模式」toggle（run_query vs run_agent），默认 agent 模式。
-- trace 面板展示 agent loop 的每轮 tool 调用（而非 9 步管线 trace）。
-- 这是 UI 侧改动，可与后端分层交付（后端先上、UI 后跟），或合并进 Plan 4。writing-plans 期定。
+- **单次问答 → 多轮聊天**：`app.py` 改用 Gradio chatbot 组件，session_id 绑定聊天会话；每轮 assistant 消息渲染对应 `AgentRun` 的多表 + 溯源。
+- 入口保留 run_query（内层单查）与 run_agent（多轮编排）两个入口，agent 模式默认。
+- trace 面板展示 agent loop 每轮 tool 调用。
+- UI 与后端**合成同一 plan**（§15 已决）。
 
 ---
 
@@ -305,15 +325,16 @@ class AgentRun:
 1. `AnthropicBackend` + `Message`/`ChatResult` 演进（§7），删除 `OpenAICompatBackend`。
 2. 3 处 `response_format` → 强制 tool_use（§7.3）。
 3. `run_safe_sql` 原语（§5）。
-4. `query_database`（`run_query` ⑥⑦ 改调 `run_safe_sql`）+ 4 个窄 tool（§6）。
+4. `query_database`（`run_query` ⑥⑦ 改调 `run_safe_sql`）+ 4 个窄 tool（§6，先 4 个，体验后再加）。
 5. agent loop（§8）+ `AgentRun`（§8.3）。
-6. source 契约（§6.1）。
-7. 内层 eval 在新后端重测（§9.1）+ 外层任务级评测骨架（§9.2）。
-8. UI 渲染 `AgentRun`（§10）。
+6. **会话历史（简单版）**：`SessionStore` + 整轮窗口 + `run_agent` 带 session_id（§8.4）。
+7. source 契约（§6.1）。
+8. 内层 eval（新后端重测）+ 外层任务级评测骨架，**两个维度并存**（§9）。
+9. UI：多轮聊天 + 渲染 `AgentRun`（§10）。
 
 **推迟（Phase 1.5 / 2）**
 - 候选生成 + 选择（CHESS 式多候选）。
-- 多轮会话记忆。
+- 会话记忆增强（摘要 / 向量记忆 / 跨会话 / 持久化）—— Phase 1 只做内存整轮窗口。
 - web / RSSHub / 东方财富 tool（可溯源契约已就位，加 tool 即可）。
 - 图表绘制 / 智能选股 tool。
 - 全量语义层（metrics catalog YAML）—— Phase 1 用窄 tool 充当 lite 版。
@@ -375,10 +396,17 @@ def make_backend(provider="deepseek") -> AgentBackend
 @dataclass(frozen=True) class AgentConfig:
     ... (现有字段) ...
     agent_max_turns: int = 6
+    session_history_turns: int = 6   # 多轮整轮窗口(§8.4)
     eval_as_of: str = "2026-06-30"   # 冻结 as-of, 喂 source.as_of
 
+# agent/session.py（新增, Phase 1 内存版）
+@dataclass class Session: sid: str; messages: list[Message]; created_at: str
+class SessionStore:
+    def get_or_create(self, sid: str) -> Session: ...
+    def append(self, sid: str, msg: Message) -> None: ...
+
 # agent/agent_loop.py
-def run_agent(question, conn, backend, rag, fewshot, config) -> AgentRun
+def run_agent(question, session_id, conn, backend, rag, fewshot, config, store: SessionStore) -> AgentRun
 @dataclass class AgentRun: status; synthesis; tables; sources; trace; turns
 ```
 
@@ -386,8 +414,9 @@ def run_agent(question, conn, backend, rag, fewshot, config) -> AgentRun
 
 ## 15. 未决（实现期定）
 
+> **已决（本轮）**：① 合成 **1 个** implementation plan（不分拆）；② 窄 tool **先 4 个**（profile/financials/quotes/performance），体验后再加；③ 内层 + 外层 **两个 eval 入口并存**作两个维度；④ 多轮会话历史进 Phase 1（简单版）。
+
 1. DeepSeek anthropic 端点鉴权 header（x-api-key vs Bearer）—— 实测确认。
-2. 外层任务级评测的 rubric / 判定方式（人工 vs LLM-judge）。
-3. 窄 tool 的切面是否再拆细（如财务拆 income/balance 各一）—— 随 demo 打磨。
-4. UI 演进与后端是否分两个 plan —— writing-plans 期按 task 粒度定。
-5. `get_financials` 多表横向拼的 report_date 对齐策略（取 MAX(report_date) 再回联 vs 各表各自最新）。
+2. 外层任务级评测的判定方式（人工 vs LLM-judge）—— 两层入口均保留（已决），判定法实现期定。
+3. 会话窗口策略（整轮 drop vs 摘要）—— Phase 1 整轮 drop，体验问题再优化。
+4. `get_financials` 多表横向拼的 report_date 对齐策略（取 MAX(report_date) 再回联 vs 各表各自最新）。
