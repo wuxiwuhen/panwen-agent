@@ -14,3 +14,6 @@ class AgentConfig:
     schema_topk: int = 5
     exec_timeout_s: int = 30
     cartesian_row_warn: int = 10_000
+    agent_max_turns: int = 6
+    session_history_turns: int = 6
+    eval_as_of: str = "2026-06-30"
