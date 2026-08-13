@@ -50,6 +50,6 @@ def test_handle_query_backend_error_is_captured(monkeypatch):
 
 
 def test_build_app_returns_blocks():
-    gr = __import__("pytest").importorskip("gradio")
+    gr = pytest.importorskip("gradio")
     demo = app.build_app()
     assert isinstance(demo, gr.Blocks)
