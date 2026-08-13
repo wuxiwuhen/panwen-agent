@@ -25,23 +25,30 @@ def test_window_drops_oldest_whole_turns_keeps_system():
     assert contents[-1] == "a7"
 
 def test_window_keeps_tool_results_with_their_assistant():
-    # 关键: tool_result 消息也是 role="user"，必须与它归属的 assistant(tool_use) 同轮，
-    # 不能因 role=="user" 就拆成新轮 → 否则裁剪会产生 tool_use/tool_result 孤儿。
-    sess = Session(sid="s", messages=[Message("system", "S")], created_at="t")
-    # 轮0: user问 → assistant(tool_use) → user(tool_result x2)
-    sess.messages += [Message("user", "q0"),
-                      Message("assistant", [{"type": "tool_use", "id": "t1", "name": "f", "input": {}}],
-                              tool_calls=[{"id": "t1", "name": "f", "input": {}}]),
-                      Message("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "r1"}]),
-                      Message("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "r2"}])]
-    # 轮1: user问 → assistant
-    sess.messages += [Message("user", "q1"), Message("assistant", "a1")]
-    _window(sess, keep_turns=1)     # 只留最近 1 轮 → 轮0 整轮丢，轮1 整轮留
-    contents = [m.content for m in sess.messages]
-    assert "q0" not in contents                        # 轮0 user 问题被丢
-    assert all(not (isinstance(c, list)) for c in contents if isinstance(c, list)) or True
-    # 关键断言: 任何留下的 tool_result 必须有其归属(这里全丢，所以不应残留孤儿 tool_result)
-    assert not any(isinstance(m.content, list) and
-                   any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m.content)
-                   for m in sess.messages)
-    assert "q1" in contents and "a1" in contents       # 轮1 完整保留
+    # 回归守卫: tool_result(role=user) 必须与归属的 assistant(tool_use) 同轮。
+    # 让含 tool_use→tool_result 对的轮【留在窗口里】(keep_turns=2)，再断言
+    # 窗口内每个 tool_result 都有其匹配的 tool_use —— 否则 naive splitter 会让
+    # tool_result 因 role=user 被拆进新轮、其 tool_use 被裁掉，留下孤儿 tool_result。
+    # 注意: 检测器必须【独立内联】，不能复用被测函数 _is_tool_result —— 否则
+    # 把 _is_tool_result 改坏会同时破坏 _window 分组与这里的检测，使断言空洞。
+    msgs = [
+        Message("system", "S"),
+        Message("user", "q1"),
+        Message("assistant", None,
+                tool_calls=[{"type": "tool_use", "id": "tu1", "name": "x", "input": {}}]),
+        Message("user", [{"type": "tool_result", "tool_use_id": "tu1", "content": "r"}]),
+        Message("assistant", "text1"),
+        Message("user", "q2"),
+        Message("assistant", "text2"),
+    ]
+    sess = Session(sid="s", created_at="", messages=msgs)
+    _window(sess, keep_turns=2)
+    kept = sess.messages
+    # 独立内联检测: 不依赖 session._is_tool_result
+    use_ids = {b["id"] for m in kept if m.role == "assistant" and m.tool_calls
+               for b in m.tool_calls if isinstance(b, dict) and b.get("type") == "tool_use"}
+    result_ids = {b["tool_use_id"] for m in kept if isinstance(m.content, list)
+                  for b in m.content
+                  if isinstance(b, dict) and b.get("type") == "tool_result"}
+    # 不变式: 窗口内每个 tool_result 必须有其匹配的 tool_use 也在窗口内(无孤儿)
+    assert result_ids <= use_ids
