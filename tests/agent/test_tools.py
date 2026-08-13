@@ -36,7 +36,7 @@ def test_get_stock_profile_builds_literal_sql():
         r = narrow.get_stock_profile(conn=None, code="600519")
         sql = m.call_args.args[0]
         assert "stock_basic" in sql and "600519" in sql and "?" not in sql   # 字面量
-        assert r.source.kind == "duckb" or r.source.kind == "duckdb"
+        assert r.source.kind == "duckdb"
         assert r.source.table == "stock_basic"
 
 
