@@ -37,8 +37,24 @@ def _rows_to_md(rows) -> str:
     return "\n".join([header_line, sep_line, *body_lines])
 
 
+def _trace_md(ar) -> str:
+    """AgentRun.trace → 编号列表：每步 tool 名 + ✓/✗ + 数据预览/归因。
+    用于核验 agent loop 过程（调了哪些 tool、成功与否、返回什么）。空 trace 返回 ''。"""
+    tr = getattr(ar, "trace", None) or []
+    if not tr:
+        return ""
+    turns = getattr(ar, "turns", 0)
+    lines = [f"**Agent 推理轨迹**（{turns} 轮 · {len(tr)} 个 tool）"]
+    for i, t in enumerate(tr, 1):
+        mark = "✓" if getattr(t, "ok", False) else "✗"
+        stage = getattr(t, "stage", "?")
+        tail = getattr(t, "rootCause", None) or getattr(t, "detail", "") or ""
+        lines.append(f"{i}. `{stage}` {mark}" + (f" — {tail}" if tail else ""))
+    return "\n".join(lines)
+
+
 def render_agent_run(ar) -> str:
-    """AgentRun → 多节 markdown：synthesis + 每张表(标题+rows markdown) + 来源溯源。
+    """AgentRun → 多节 markdown：synthesis + 每张表(标题+rows markdown) + 来源溯源 + 推理轨迹。
     纯函数，仅读 ar 的属性，对任意 TableResult.rows 形态不崩（_rows_to_md 兜底）。
     """
     parts = [ar.synthesis] if ar.synthesis else []
@@ -50,6 +66,9 @@ def render_agent_run(ar) -> str:
     if ar.sources:
         parts.append("**来源**: " + ", ".join(
             f"{s.table or s.kind}" for s in ar.sources))
+    tr_md = _trace_md(ar)
+    if tr_md:
+        parts.append(tr_md)
     return "\n\n".join(parts)
 
 

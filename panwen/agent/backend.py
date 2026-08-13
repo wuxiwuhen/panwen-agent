@@ -15,13 +15,17 @@ _PROVIDERS = {
     "glm":      ("GLM_API_KEY", "https://api.z.ai/api/anthropic", "glm-4.6", "auth_token"),
 }
 
+# anthropic Messages API 必填; 缺省会触发客户端 "Missing required arguments: max_tokens"。
+# 4096 对两家的 anthropic 兼容端点都安全(deepseek-chat 输出上限 8192, glm-4.6 更宽)。
+DEFAULT_MAX_TOKENS = 4096
+
 
 class BackendConfigError(RuntimeError): ...
 
 
 class AgentBackend(Protocol):
     def chat(self, messages, *, tools=None, tool_choice=None, temperature=0.0,
-             system=None, model=None) -> ChatResult: ...
+             system=None, model=None, max_tokens=DEFAULT_MAX_TOKENS) -> ChatResult: ...
 
 
 def _to_content_blocks(msg: Message) -> list[dict]:
@@ -53,7 +57,7 @@ class AnthropicBackend:
         self.model = model
 
     def chat(self, messages, *, tools=None, tool_choice=None, temperature=0.0,
-             system=None, model=None) -> ChatResult:
+             system=None, model=None, max_tokens=DEFAULT_MAX_TOKENS) -> ChatResult:
         sys_text = system
         msgs = []
         for m in messages:
@@ -64,7 +68,8 @@ class AnthropicBackend:
                 # (Anthropic Messages API 拒绝 messages 内的 role=system, 400)
             else:
                 msgs.append({"role": m.role, "content": _to_content_blocks(m)})
-        kw = dict(model=model or self.model, messages=msgs, temperature=temperature)
+        kw = dict(model=model or self.model, messages=msgs, temperature=temperature,
+                  max_tokens=max_tokens)
         if sys_text: kw["system"] = sys_text
         if tools: kw["tools"] = tools
         if tool_choice: kw["tool_choice"] = tool_choice

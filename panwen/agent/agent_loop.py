@@ -50,16 +50,20 @@ def run_agent(question, session_id, conn, backend, rag, fewshot, config: AgentCo
         session.messages.append(Message("assistant", resp.content_blocks, tool_calls=resp.tool_calls))
         if not resp.tool_calls:
             return AgentRun("answered", resp.content, tables, _dedup(sources), trace, turns)
+        results = []
         for tc in resp.tool_calls:
             tr = dispatch(tc["name"], tc["input"])
-            content = [{"type": "tool_result", "tool_use_id": tc["id"],
-                        "content": _serialize(tr)}]
-            session.messages.append(Message("user", content))
+            results.append({"type": "tool_result", "tool_use_id": tc["id"],
+                            "content": _serialize(tr)})
             if tr.source and tr.source.kind != "none":
                 sources.append(tr.source)
                 if isinstance(tr.data, list):
                     tables.append(TableResult(title=tc["name"], rows=tr.data, source=tr.source))
             trace.append(TraceStep(tc["name"], tr.ok, str(tr.data)[:80]))
+        # 一轮的所有 tool_use 必须合并到【单条】user 消息回填(Anthropic 契约):
+        # assistant 一条含 N 个 tool_use → 紧跟一条含 N 个 tool_result 的 user 消息,
+        # 否则 API 400 "tool_use ids were found without tool_result blocks immediately after"。
+        session.messages.append(Message("user", results))
         turns += 1
     return AgentRun("answered", "(已达最大轮次)", tables, _dedup(sources), trace, turns)
 

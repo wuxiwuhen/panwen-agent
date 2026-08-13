@@ -68,3 +68,22 @@ def test_render_agent_run_multi_tables():
                   sources=[Source("duckdb", "stock_basic")])
     md = render_agent_run(ar)
     assert "基本信息" in md and "最新财务" in md and "茅台概览" in md
+
+
+def test_render_agent_run_includes_trace():
+    # 多轮 Agent 必须把 trace(每步 tool 名 + ✓/✗ + 数据预览/归因) 渲染出来,
+    # 否则用户看不到 agent loop 过程, 无法核验。无 trace 时不出现该小节。
+    ar = AgentRun(
+        synthesis="信维通信概览。",
+        tables=[],
+        sources=[],
+        trace=[TraceStep("get_stock_profile", True, '[{"name":"信维通信"}]'),
+               TraceStep("get_financials", False, "无数据", rootCause="ROOT_EMPTY")],
+        turns=1,
+    )
+    md = render_agent_run(ar)
+    assert "Agent 推理轨迹" in md
+    assert "get_stock_profile" in md and "get_financials" in md
+    assert "✓" in md and "✗" in md
+    # 无 trace 的 AgentRun 不应出现轨迹小节
+    assert "Agent 推理轨迹" not in render_agent_run(AgentRun(synthesis="x"))

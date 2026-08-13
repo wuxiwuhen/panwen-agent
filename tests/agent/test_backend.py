@@ -52,6 +52,18 @@ def test_response_tool_use_parsed():
     assert r.content_blocks == [{"type": "tool_use", "id": "t1", "name": "f", "input": {"a": 1}}]
 
 
+def test_chat_passes_max_tokens():
+    # 回归: messages.create 必须传 max_tokens(anthropic SDK 必填)。
+    # 旧实现 kw 里只有 model/messages/temperature → 客户端校验直接抛
+    # "Missing required arguments; Expected ... ('max_tokens', 'messages' and 'model') ..."。
+    be = _be_with_mock_create()
+    be.client.messages.create.return_value = MagicMock(
+        content=[{"type": "text", "text": "ans"}], stop_reason="end_turn")
+    be.chat([Message("user", "hi")])
+    kw = be.client.messages.create.call_args.kwargs
+    assert "max_tokens" in kw and kw["max_tokens"] > 0
+
+
 def test_make_backend_providers():
     import os
     os.environ["DEEPSEEK_API_KEY"] = "dk"
