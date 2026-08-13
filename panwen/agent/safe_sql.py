@@ -21,12 +21,17 @@ def _execute(sql, conn, timeout_s):
         cur = conn.execute(sql)
         cols = [d[0] for d in cur.description] if cur.description else []
         return [dict(zip(cols, r)) for r in cur.fetchall()]
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_run)
     try:
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            return ex.submit(_run).result(timeout=timeout_s), None
+        rows = fut.result(timeout=timeout_s)
+        ex.shutdown(wait=False)          # worker already done; clean up
+        return rows, None
     except FuturesTimeout:
+        ex.shutdown(wait=False)          # do NOT wait — let worker finish in background
         return None, "ROOT_TIMEOUT"
     except Exception as e:
+        ex.shutdown(wait=False)
         return None, f"ROOT_EXEC:{type(e).__name__}:{e}"
 
 _BLOCKING = {"ROOT_PARSE", "ROOT_WRITE_OP", "ROOT_UNKNOWN_TABLE",

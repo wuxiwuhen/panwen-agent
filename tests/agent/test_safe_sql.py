@@ -29,3 +29,18 @@ def test_unparam_is_advisory_not_blocking(conn):
     assert r.ok                                          # advisory 不阻断执行
     assert "ROOT_UNPARAM" not in [i.code for i in r.blocking]          # 永不进 blocking
     assert any(i.code == "ROOT_UNPARAM" for i in r.advisory)          # 且确被标为 advisory
+
+def test_timeout_returns_promptly():
+    # 慢查询(强制逐行相乘，无法被 DuckDB 代数化简；~2.2s) + 1s 超时 → ROOT_TIMEOUT，
+    # 且调用方必须立即返回（shutdown(wait=False) 不阻塞），不得等查询跑完。
+    # use_validsql=False 以隔离 _execute 的超时路径：range() 是 DuckDB 表函数，
+    # 不在 schema 中，若开 ValidSQL 会被 ROOT_UNKNOWN_TABLE 阻断、到不了执行层。
+    import time
+    c = db.connect(":memory:"); db.init_schema(c)
+    cfg = AgentConfig(exec_timeout_s=1, use_validsql=False)     # 1s 超时，绕过守卫直达执行
+    t0 = time.perf_counter()
+    r = run_safe_sql("SELECT sum(a.range*b.range) FROM range(70000000) a, range(10) b", c, cfg)
+    elapsed = time.perf_counter() - t0
+    assert r.ok is False
+    assert r.rootCause == "ROOT_TIMEOUT"
+    assert elapsed < 5.0          # 调用方迅速返回（远小于完整查询耗时），证明 shutdown(wait=False)
