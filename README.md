@@ -29,7 +29,30 @@ make eval                     # 首次会下载 bge-large-zh-v1.5（~1.3GB）
 - **指标全部实测，绝不编造。** 上述能力已通过 99 项单元/集成测试验证（管线分支、ValidSQL 各检查、RAG 召回、自纠错预算、评分边界）。**端到端执行准确率 / ablation 百分比须由你在本地 `make eval` 实测**——本仓库不预填任何准确率数字。
 - 跨域基准（如 Hermes 54%→93%、GRPO 87.3%）是**他人成果**，仅作对比参照，绝不冒认为本项目指标。
 - ValidSQL check 5（参数化）当前为顾问式（见上），不声称其在 MVP 阻断。
-- 交互式 Demo UI（Gradio/Streamlit）为独立后续计划，不在 Plan 2 内。
+- 交互式 Demo UI（Gradio）已交付（Plan 3，见下文「Demo UI」段）；本地 `python app.py` 或部署 HF Spaces 实跑。
+
+---
+
+## Demo UI（Plan 3）
+
+交互式 Gradio Web UI：输入中文问句 → 展示 SQL + 结果表 + 解释（置信度/假设）+ 9 步推理 trace，并暴露 `AgentConfig` 开关（Few-shot / ValidSQL / 自纠错 / schema top_k）现场对比。
+
+**本地运行：**
+
+```bash
+pip install gradio
+python app.py
+# 连实时库（可选）：export PANWEN_DB=data/live.duckdb
+```
+
+**部署到 Hugging Face Spaces（公开可点链接）：**
+
+1. 新建 Space（SDK: Gradio，CPU basic）。
+2. 在 Space Settings → Secrets 设 `DEEPSEEK_API_KEY`（或 `GLM_API_KEY`）。
+3. push 本仓库到 Space repo（`data/eval.duckdb` 22MB 随仓提交；`live.duckdb` gitignored 不推送）。
+4. Space 跑根 `app.py`，按 `requirements.txt` 装依赖（**不含 akshare**，查询路径不依赖它），从仓库根 cwd 导入 `panwen`。首次提问需下载 bge-large-zh（~1.3GB），期间查询按钮显示加载状态（Gradio spinner，约 1-2 分钟）。
+
+**诚实口径：** Demo 跑在冻结 `eval.duckdb`（as-of 2026-06-30 快照）；ValidSQL check 5 为 MVP 顾问式（非阻断）；不预填准确率（须 `make eval` 实测）。
 
 ---
 
